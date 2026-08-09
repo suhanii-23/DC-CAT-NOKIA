@@ -5,6 +5,22 @@ A Nokia internship prototype for automated document quality checks
 DOCX documents. Three teams build one feature each, in parallel, against
 a shared contract.
 
+## Status
+
+- `broken_links` — **done**, the worked example. Fully implemented and tested.
+- `keyword_search` — **not started**. `features/keyword_search/service.py`
+  is an empty file, waiting on its owner.
+- `spell_check` — **not started**. `features/spell_check/service.py` is
+  an empty file, waiting on its owner.
+
+This is expected, not broken: `app/cli.py` and `tests/test_contract.py`
+both load each feature's class dynamically and skip it if it isn't
+written yet, so `broken_links` keeps running and testing on its own.
+Right now `pytest tests/ -q` reports **7 passed, 4 skipped** — the 4
+skips are the two missing features' tests, not failures. Once someone
+adds a class to one of the empty files, the CLI and test suite pick it
+up automatically; no other file needs to change.
+
 ## The contract comes first
 
 `common/contracts.py` is the frozen inter-team agreement. Every feature
@@ -31,9 +47,11 @@ Rules that keep three parallel teams from breaking each other:
 - **Stay in your feature folder.** Don't edit another team's
   `features/<other>/`, or `common/parser.py` / `common/excel.py`
   (beyond adding your own entry where the code says so).
-- **Load models lazily**, once per instance, via the `self._model`
-  pattern already used as a stub in `keyword_search` and `spell_check`
-  — never inside `process()`.
+- **Load models lazily**, once per instance, via a `self._model = None`
+  in `__init__` plus an `_ensure_model()` method — never inside
+  `process()`. See `features/broken_links/service.py` for the general
+  shape of a feature (it doesn't need a model, but the method layout is
+  the same).
 - **Never invent evidence.** `broken_links` only ever suggests headings
   that exist in `document.headings`; if the evidence is weak, it
   returns no suggestion instead of guessing.
@@ -49,10 +67,11 @@ common/contracts.py           Document, Page, Paragraph, Heading, LinkAnnotation
                                Finding, FeatureResult, FeatureModule (Protocol)
 common/parser.py               PDF (PyMuPDF) / DOCX (python-docx) -> Document
 common/excel.py                Summary sheet + one sheet per feature
-features/broken_links/         worked example — fully implemented
-features/keyword_search/       lexical search implemented; TODO: BGE + FAISS
-features/spell_check/          allow-list + difflib implemented; TODO: T5
+features/broken_links/         worked example — done, fully implemented
+features/keyword_search/       empty — not started, owner TBD
+features/spell_check/          empty — not started, owner TBD
 app/cli.py                     python -m app.cli <file|folder> --query X --excel out.xlsx
+                                (loads feature classes dynamically; skips ones not yet written)
 fixtures/make_fixture.py       generates fixtures/sample.pdf for local testing
 tests/test_contract.py         parametrised over all three features
 ```
@@ -73,25 +92,33 @@ pytest tests/ -q
 python -m app.cli fixtures/sample.pdf --query authentication --excel report.xlsx
 ```
 
-`pytest tests/ -q` must stay green after every change. A failing test
+`pytest tests/ -q` must stay green after every change (skips for
+not-yet-implemented features are fine; failures are not). A failing test
 means the code is wrong — don't edit the test to make it pass.
 
 ## Feature notes
 
-- **broken_links** (worked example): flags internal links whose target
-  page is out of range, and links to named destinations that don't
-  exist. Classifies the reference type (Section/Figure/Table/Appendix/
-  Chapter) by regex, and suggests a fix only from real headings — exact
-  number match is 0.95 confidence, an adjacent sibling number is 0.72,
-  otherwise no suggestion is returned.
-- **keyword_search**: lexical occurrence count + page numbers + snippet
-  today. `_ensure_model` in `service.py` is where BGE embeddings + FAISS
-  would plug in for semantic search — not wired into `process()` yet.
-- **spell_check**: a terminology allow-list (never flags `gNodeB`,
-  `MOCN`, `RSRP`, `X2`, `ERR#01`, `airscale_rnc`) plus a `difflib`
-  comparison against a small set of commonly confused real-word pairs
-  (e.g. "form" vs "from"). `_ensure_model` is where a local T5
-  grammar-correction pass would plug in — not wired into `process()` yet.
+- **broken_links** (done, the worked example): flags internal links
+  whose target page is out of range, and links to named destinations
+  that don't exist. Classifies the reference type (Section/Figure/
+  Table/Appendix/Chapter) by regex, and suggests a fix only from real
+  headings — exact number match is 0.95 confidence, an adjacent sibling
+  number is 0.72, otherwise no suggestion is returned.
+- **keyword_search** (not started): planned as lexical occurrence count
+  + page numbers + snippet, with a documented spot for BGE embeddings +
+  FAISS (semantic search) to plug in later via a lazy `_ensure_model`.
+  Whoever picks this up: `features/broken_links/service.py` is the
+  reference shape to follow (constructor, `is_available`/`supports`/
+  `process`/`report_columns`, `process()` wrapped in try/except).
+- **spell_check** (not started): planned as a terminology allow-list
+  (never flag `gNodeB`, `MOCN`, `RSRP`, `X2`, `ERR#01`, `airscale_rnc`)
+  plus a `difflib` comparison against commonly confused real-word pairs
+  (e.g. "form" vs "from"), with a documented spot for a local T5
+  grammar-correction pass to plug in later. Watch out: a naive
+  `difflib.get_close_matches` over every word will flag short common
+  words (e.g. "the" fuzzy-matches "then", "for" fuzzy-matches "form") —
+  guard with a common-words stoplist and a minimum word length before
+  falling back to fuzzy matching.
 
 ## New dependencies
 

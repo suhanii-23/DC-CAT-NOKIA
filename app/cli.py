@@ -6,6 +6,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
 from typing import Optional
@@ -13,15 +14,29 @@ from typing import Optional
 from common import excel
 from common.contracts import Document, FeatureModule, FeatureResult
 from common.parser import parse
-from features.broken_links.service import BrokenLinksService
-from features.keyword_search.service import KeywordSearchService
-from features.spell_check.service import SpellCheckService
 
-FEATURE_MODULES: list[FeatureModule] = [
-    BrokenLinksService(),
-    KeywordSearchService(),
-    SpellCheckService(),
+# Each entry is (module path, class name). A feature whose service.py is
+# still empty (class not written yet) is skipped rather than crashing the
+# whole CLI, so features can be built and run independently of each other.
+_FEATURE_SOURCES = [
+    ("features.broken_links.service", "BrokenLinksService"),
+    ("features.keyword_search.service", "KeywordSearchService"),
+    ("features.spell_check.service", "SpellCheckService"),
 ]
+
+
+def _load_feature(module_path: str, class_name: str) -> Optional[FeatureModule]:
+    try:
+        module = importlib.import_module(module_path)
+        feature_class = getattr(module, class_name)
+    except (ImportError, AttributeError):
+        return None
+    return feature_class()
+
+
+_loaded = [(name, _load_feature(path, name)) for path, name in _FEATURE_SOURCES]
+FEATURE_MODULES: list[FeatureModule] = [f for _name, f in _loaded if f is not None]
+NOT_YET_IMPLEMENTED: list[str] = [name for name, f in _loaded if f is None]
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
 
@@ -72,6 +87,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not files:
         print(f"No supported documents found at: {args.target}", file=sys.stderr)
         return 1
+
+    for class_name in NOT_YET_IMPLEMENTED:
+        print(f"(note: {class_name} not implemented yet, skipping)", file=sys.stderr)
 
     options = {"query": args.query}
     columns_by_feature = {feature.name: feature.report_columns() for feature in FEATURE_MODULES}

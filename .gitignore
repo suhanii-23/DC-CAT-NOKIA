@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Generated report/fixture artifacts — regenerate with fixtures/make_fixture.py
+fixtures/sample.pdf
+*.xlsx
+
+.DS_Store

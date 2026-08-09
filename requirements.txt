@@ -1,0 +1,4 @@
+PyMuPDF
+python-docx
+openpyxl
+pytest

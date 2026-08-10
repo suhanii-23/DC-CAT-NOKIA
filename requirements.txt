@@ -2,3 +2,14 @@ PyMuPDF
 python-docx
 openpyxl
 pytest
+
+# Semantic keyword search (BAAI/bge-base-en-v1.5 + FAISS IndexFlatIP).
+# Model weights are provisioned manually and are never downloaded at
+# runtime — see features/keyword_search/service.py for the setup steps.
+# sentence-transformers installs torch as a dependency. On Linux/macOS
+# that pulls ~2.5 GB of CUDA wheels; install CPU-only torch first to
+# avoid it:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+numpy
+sentence-transformers
+faiss-cpu

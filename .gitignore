@@ -9,4 +9,7 @@ venv/
 fixtures/sample.pdf
 *.xlsx
 
+# Locally provisioned BGE model weights — never committed
+models/
+
 .DS_Store

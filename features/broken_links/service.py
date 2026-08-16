@@ -5,6 +5,12 @@ links to named destinations that don't exist. Where possible, suggests a
 replacement heading — but only from headings that actually exist in
 document.headings. It never invents a heading, page, figure or table
 number: if the evidence is weak, it returns no suggestion.
+
+Evidence for *what* a link refers to is taken in order of reliability:
+the named destination first ("Section_5.2"), then the visible link text,
+then the paragraph the link sits in. The link rectangle rarely lines up
+with the reference phrase, so anchor text alone is often truncated or
+picks up neighbouring words ("the product. Se").
 """
 from __future__ import annotations
 
@@ -20,6 +26,10 @@ _REFERENCE_RE = re.compile(
 
 _EXACT_MATCH_CONFIDENCE = 0.95
 _SIBLING_MATCH_CONFIDENCE = 0.72
+
+# How much of the (possibly truncated) anchor text to use when locating the
+# paragraph a link sits in.
+_SNIPPET_LEN = 12
 
 
 class BrokenLinksService:
@@ -45,8 +55,9 @@ class BrokenLinksService:
                 if reason is None:
                     continue
 
-                reference_type = _classify_reference_type(link.text)
-                suggestion, confidence = _suggest_heading(link.text, document.headings)
+                reference_text, evidence_source = _reference_text(link, document)
+                reference_type = _classify_reference_type(reference_text)
+                suggestion, confidence = _suggest_heading(reference_text, document.headings)
 
                 findings.append(
                     Finding(
@@ -55,11 +66,13 @@ class BrokenLinksService:
                         page=link.page,
                         message=(
                             f"Broken {reference_type or 'internal'} reference "
-                            f"{link.text!r} ({reason})"
+                            f"{_display(reference_text)!r} ({reason})"
                         ),
                         confidence=confidence,
                         details={
                             "reference_type": reference_type,
+                            "reference_text": _display(reference_text),
+                            "evidence_source": evidence_source,
                             "link_text": link.text,
                             "reason": reason,
                             "suggested_heading": suggestion.text if suggestion else None,
@@ -79,6 +92,8 @@ class BrokenLinksService:
     def report_columns(self) -> list[str]:
         return [
             "reference_type",
+            "reference_text",
+            "evidence_source",
             "link_text",
             "reason",
             "suggested_heading",
@@ -96,6 +111,43 @@ def _broken_reason(link, page_count: int) -> Optional[str]:
     if link.target_name is not None:
         return "named destination not found"
     return None
+
+
+def _reference_text(link, document: Document) -> tuple[str, str]:
+    """Best available evidence for what this link was meant to point at.
+
+    Returns (text, evidence_source). Nothing here invents content: every
+    candidate is taken verbatim from the document or the link itself.
+    """
+    # 1. Named destination — the most reliable signal when present, because
+    #    the PDF author wrote it deliberately: "Section_5.2" -> "Section 5.2".
+    if link.target_name:
+        candidate = link.target_name.replace("_", " ").replace("-", " ")
+        if _REFERENCE_RE.search(candidate):
+            return candidate, "target_name"
+
+    # 2. The visible link text, when it already contains a full reference.
+    if link.text and _REFERENCE_RE.search(link.text):
+        return link.text, "link_text"
+
+    # 3. The paragraph the link sits in. Anchor text is often truncated by the
+    #    link rectangle, so use whatever survived to locate the paragraph and
+    #    read the reference from there.
+    snippet = (link.text or "").strip()[:_SNIPPET_LEN]
+    if snippet:
+        for paragraph in document.paragraphs:
+            if paragraph.page != link.page:
+                continue
+            if snippet in paragraph.text and _REFERENCE_RE.search(paragraph.text):
+                return paragraph.text, "paragraph"
+
+    return link.text or "", "raw"
+
+
+def _display(text: str, limit: int = 80) -> str:
+    """Collapse whitespace so messages stay on one line."""
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
 
 
 def _classify_reference_type(text: str) -> Optional[str]:
@@ -122,9 +174,9 @@ def _is_adjacent_sibling(a: tuple[int, ...], b: tuple[int, ...]) -> bool:
 
 
 def _suggest_heading(
-    link_text: str, headings: list[Heading]
+    reference_text: str, headings: list[Heading]
 ) -> tuple[Optional[Heading], Optional[float]]:
-    match = _REFERENCE_RE.search(link_text)
+    match = _REFERENCE_RE.search(reference_text)
     if not match:
         return None, None
 

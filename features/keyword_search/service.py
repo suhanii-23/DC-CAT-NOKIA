@@ -46,10 +46,11 @@ lexical search carries on unaffected.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections.abc import Mapping
-from typing import NamedTuple, Optional
+from typing import Any, NamedTuple, Optional
 
 from common.contracts import Document, FeatureResult, Finding
 
@@ -71,14 +72,46 @@ _QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 _CHUNK_MAX_CHARS = 400
 _SEMANTIC_TOP_K = 5  # semantic findings actually returned
-_SEMANTIC_OVERFETCH = 10  # candidates pulled from FAISS before dedupe
+# Candidates pulled from FAISS *beyond* the chunks that already match
+# lexically — see the k computation in _semantic_pass for why the lexical
+# count has to be added rather than this being an absolute cap.
+_SEMANTIC_OVERFETCH = 10
 
-# Deliberately disabled. A similarity floor cannot be chosen honestly
+# Measured on this hardware over 400 chunks: 16 -> 9.09s, 32 -> 8.09s,
+# 64 -> 7.22s. Re-measure before changing; larger batches raise peak memory
+# during encoding for diminishing returns.
+_ENCODE_BATCH_SIZE = 64
+
+# Still disabled by default. A similarity floor cannot be chosen honestly
 # without calibrating against real documents, and BGE cosine scores sit in
-# a narrow band that makes a borrowed constant meaningless. Scores are
-# recorded on every semantic finding so a threshold can be calibrated
-# later; until then nothing is filtered by score.
-_SEMANTIC_THRESHOLD: Optional[float] = None
+# a narrow band that makes a borrowed constant meaningless — an
+# uncalibrated floor silently deletes correct results, which is worse than
+# returning weak ones with an honest label.
+#
+# DCCAT_SEMANTIC_MIN_SCORE exists so a floor can be applied once someone
+# HAS calibrated it against real Nokia documents. Leave it unset until
+# then: setting it on a hunch is the failure mode this comment is warning
+# about. Prefer the advisory `relevance` band below, which informs the
+# reader without discarding anything.
+_SEMANTIC_THRESHOLD: Optional[float] = (
+    float(os.environ["DCCAT_SEMANTIC_MIN_SCORE"])
+    if os.environ.get("DCCAT_SEMANTIC_MIN_SCORE")
+    else None
+)
+
+# Advisory only — these NEVER filter. They label how much weight a reader
+# should put on a semantic hit, so an unrelated query stops presenting
+# weak passages as if they were solid evidence.
+#
+# Provisional, and deliberately coarse. Measured on this repo's documents:
+# a genuine "login" -> authentication match scored 0.459, while queries
+# with no relation to the document scored 0.288-0.393. The boundaries
+# separate those two populations, but they rest on a handful of
+# observations, not a calibration study — treat the bands as a reading aid,
+# not a verdict, and re-derive them from real documents before anyone
+# depends on them.
+_RELEVANCE_STRONG = 0.60
+_RELEVANCE_MODERATE = 0.45
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -120,6 +153,10 @@ class KeywordSearchService:
         self._model = None
         self._model_error: Optional[str] = None
         self._model_load_attempted = False
+        # (content hash, embedding matrix) for the most recently embedded
+        # document, so repeated queries against one document don't re-encode
+        # it. Holds one document at a time; see _embed_passages.
+        self._embedding_cache: Optional[tuple[str, Any]] = None
 
     def is_available(self) -> bool:
         # Always True: lexical search needs nothing. Semantic degrades on
@@ -175,6 +212,7 @@ class KeywordSearchService:
             "snippet",
             "paragraph_index",
             "score",
+            "relevance",
             "chunk_index",
         ]
 
@@ -222,6 +260,50 @@ class KeywordSearchService:
 
         return self._model
 
+    def _embed_passages(self, model, chunk_texts: list[str], np):
+        """Embed the document's chunks, reusing the previous result when the
+        content is identical.
+
+        Encoding dominates the cost of a query (tens of seconds on a large
+        document), and the same document is normally searched several times
+        in a row — an agent asking follow-up questions, or a reviewer trying
+        different terms. Only the query vector genuinely changes between
+        those calls.
+
+        The key is a hash of the chunk text itself, never the file path.
+        app/cli.py builds one service instance and reuses it across every
+        document in a folder walk, so a path-keyed cache would hand one
+        document's embeddings to another whenever a path repeated or a file
+        was regenerated — silently returning confident results drawn from
+        the wrong document. Hashing the content makes that impossible:
+        different text cannot collide onto the same key, and identical text
+        is by definition interchangeable.
+
+        Exactly one document is retained, so memory stays bounded (~3 MB per
+        1000 chunks).
+        """
+        digest = hashlib.sha256()
+        for text in chunk_texts:
+            digest.update(text.encode("utf-8"))
+            digest.update(b"\0")  # length-delimit so ["ab"] != ["a", "b"]
+        key = digest.hexdigest()
+
+        cached = self._embedding_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        passages = model.encode(
+            chunk_texts,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            batch_size=_ENCODE_BATCH_SIZE,
+        )
+        # FAISS requires float32, C-contiguous input. Normalized vectors make
+        # inner product identical to cosine similarity.
+        passages = np.ascontiguousarray(passages, dtype="float32")
+        self._embedding_cache = (key, passages)
+        return passages
+
     def _semantic_pass(
         self, document: Document, query: str, pattern: re.Pattern
     ) -> tuple[list[Finding], str]:
@@ -242,21 +324,14 @@ class KeywordSearchService:
             if not chunks:
                 return [], "ok: no chunks to search"
 
-            passages = model.encode(
-                [chunk.text for chunk in chunks],
-                normalize_embeddings=True,
-                convert_to_numpy=True,
-                batch_size=16,
+            passages = self._embed_passages(
+                model, [chunk.text for chunk in chunks], np
             )
             query_vector = model.encode(
                 [_QUERY_PREFIX + query],
                 normalize_embeddings=True,
                 convert_to_numpy=True,
             )
-
-            # FAISS requires float32, C-contiguous input. Normalized
-            # vectors make inner product identical to cosine similarity.
-            passages = np.ascontiguousarray(passages, dtype="float32")
             query_vector = np.ascontiguousarray(query_vector, dtype="float32")
 
             # Guards against the wrong model being provisioned: bge-small
@@ -270,7 +345,18 @@ class KeywordSearchService:
             index = faiss.IndexFlatIP(passages.shape[1])
             index.add(passages)
 
-            k = min(_SEMANTIC_OVERFETCH, index.ntotal)
+            # Chunks containing the query verbatim rank highest here and are
+            # then dropped by _select_semantic, so a fixed budget gets spent
+            # entirely on candidates that will be discarded: any document
+            # where the query appeared _SEMANTIC_OVERFETCH times returned no
+            # semantic results at all, silently, while still reporting
+            # status="ok". Sizing the budget past the lexical matches
+            # guarantees _SEMANTIC_OVERFETCH genuine candidates survive the
+            # filter. IndexFlatIP scans every vector regardless of k, so a
+            # larger k costs no extra search time — only a bigger top-k
+            # selection, which is negligible.
+            lexical_chunks = sum(1 for chunk in chunks if pattern.search(chunk.text))
+            k = min(lexical_chunks + _SEMANTIC_OVERFETCH, index.ntotal)
             scores, ids = index.search(query_vector, k)
 
             # FAISS pads with -1 when k exceeds the number of vectors.
@@ -492,6 +578,7 @@ def _summary_finding(
             "snippet": hits[0].snippet,
             "paragraph_index": None,
             "score": None,
+            "relevance": None,  # exact matches need no similarity caveat
             "chunk_index": None,
         },
     )
@@ -515,22 +602,37 @@ def _unit_finding(feature: str, query: str, hit: _UnitHit) -> Finding:
             "snippet": hit.snippet,
             "paragraph_index": hit.unit.paragraph_index,
             "score": None,
+            "relevance": None,  # exact matches need no similarity caveat
             "chunk_index": None,
         },
     )
+
+
+def _relevance_band(score: float) -> str:
+    """Advisory label for a similarity score. Never used to filter."""
+    if score >= _RELEVANCE_STRONG:
+        return "strong"
+    if score >= _RELEVANCE_MODERATE:
+        return "moderate"
+    return "weak"
 
 
 def _semantic_finding(feature: str, query: str, score: float, chunk: _Chunk) -> Finding:
     where = f"page {chunk.page}"
     if chunk.paragraph_index is not None:
         where += f", paragraph {chunk.paragraph_index}"
+    band = _relevance_band(score)
     return Finding(
         feature=feature,
         severity="info",
         page=chunk.page,
+        # States the strength rather than asserting the passage *is*
+        # related: with no calibrated floor, a query unrelated to the
+        # document still returns its nearest chunks, and phrasing those as
+        # "Passage related to X" presents a weak neighbour as evidence.
         message=(
-            f"Passage related to {query!r} on {where} "
-            f"(similarity {score:.3f}, no exact match)"
+            f"Possible semantic match for {query!r} on {where} "
+            f"({band} similarity {score:.3f}, no exact match)"
         ),
         confidence=score,
         details={
@@ -544,6 +646,7 @@ def _semantic_finding(feature: str, query: str, score: float, chunk: _Chunk) -> 
             "snippet": " ".join(chunk.text.split()),
             "paragraph_index": chunk.paragraph_index,
             "score": score,
+            "relevance": band,
             "chunk_index": chunk.chunk_index,
         },
     )

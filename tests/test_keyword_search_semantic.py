@@ -442,4 +442,4 @@ def test_real_model_loads_only_once_per_instance():
     service.process(document, {"query": "login"})
     first = service._model
     service.process(document, {"query": "password"})
-    assert service._model is first
+    assert service._model is first    

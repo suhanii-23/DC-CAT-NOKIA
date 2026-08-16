@@ -13,3 +13,4 @@ pytest
 numpy
 sentence-transformers
 faiss-cpu
+mcp

@@ -47,6 +47,32 @@ def _run(service, path: str, options: dict | None = None) -> dict[str, Any]:
     return _payload(service.process(document, options))
 
 
+def _keep(findings: list, limit: int) -> list:
+    """Cap the payload without letting bulk findings crowd out scarce ones.
+
+    keyword_search appends its semantic results *after* every lexical hit,
+    so a plain findings[:limit] silently drops exactly the meaning-based
+    matches the tool advertises — on any document with `limit` lexical hits
+    the agent would be told there were none. Semantic results are capped at
+    5 by the service, so reserving room for them costs almost nothing.
+
+    Features that don't set a match_type (broken_links, spell_check) have no
+    scarce class, so this reduces to the original head-slice for them.
+
+    The trailing [:limit] is defensive. Reserving room for the scarce class
+    only stays within budget while that class is small, which today it is
+    (_SEMANTIC_TOP_K is 5 against a limit of 100). Nothing enforces that
+    across module boundaries, so the clamp keeps the cap honest if the
+    service ever returns more semantic findings than the payload can hold.
+    At the current constants it is a no-op.
+    """
+    if len(findings) <= limit:
+        return list(findings)
+    scarce = [f for f in findings if f.details.get("match_type") == "semantic"]
+    bulk = [f for f in findings if f.details.get("match_type") != "semantic"]
+    return (bulk[: max(0, limit - len(scarce))] + scarce)[:limit]
+
+
 def _payload(result: FeatureResult, truncate: int = MAX_FINDINGS) -> dict[str, Any]:
     findings = [
         {
@@ -55,7 +81,7 @@ def _payload(result: FeatureResult, truncate: int = MAX_FINDINGS) -> dict[str, A
             "confidence": f.confidence,
             **f.details,
         }
-        for f in result.findings[:truncate]
+        for f in _keep(result.findings, truncate)
     ]
     payload: dict[str, Any] = {
         "status": result.status,

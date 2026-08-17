@@ -24,6 +24,12 @@ _REFERENCE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Reference types that name a heading in the document outline. Figure and
+# Table references point at captions, which are not headings, so matching
+# their number against heading numbers would be wrong: "Figure 3" is not
+# "Section 3".
+_HEADING_REFERENCE_TYPES = frozenset({"Section", "Clause", "Chapter", "Appendix"})
+
 _EXACT_MATCH_CONFIDENCE = 0.95
 _SIBLING_MATCH_CONFIDENCE = 0.72
 
@@ -57,7 +63,9 @@ class BrokenLinksService:
 
                 reference_text, evidence_source = _reference_text(link, document)
                 reference_type = _classify_reference_type(reference_text)
-                suggestion, confidence = _suggest_heading(reference_text, document.headings)
+                suggestion, confidence = _suggest_heading(
+                    reference_text, reference_type, document.headings
+                )
 
                 findings.append(
                     Finding(
@@ -174,8 +182,16 @@ def _is_adjacent_sibling(a: tuple[int, ...], b: tuple[int, ...]) -> bool:
 
 
 def _suggest_heading(
-    reference_text: str, headings: list[Heading]
+    reference_text: str,
+    reference_type: Optional[str],
+    headings: list[Heading],
 ) -> tuple[Optional[Heading], Optional[float]]:
+    # Only heading-style references can be answered from the heading list.
+    # A Figure or Table reference would otherwise match an unrelated section
+    # that happens to share the same number.
+    if reference_type not in _HEADING_REFERENCE_TYPES:
+        return None, None
+
     match = _REFERENCE_RE.search(reference_text)
     if not match:
         return None, None

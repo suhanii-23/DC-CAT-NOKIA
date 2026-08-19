@@ -16,7 +16,7 @@ import importlib
 import os
 import sys
 from typing import Optional
-
+from app.agent.graph import agent_graph
 from common import excel
 from common.contracts import Document, FeatureModule, FeatureResult
 from common.parser import parse
@@ -102,13 +102,16 @@ def _run_document(
     path: str, options: dict, features: list[FeatureModule]
 ) -> tuple[Document, list[FeatureResult]]:
     document = parse(path)
-    results: list[FeatureResult] = []
-    for feature in features:
-        if not feature.is_available() or not feature.supports(document):
-            results.append(FeatureResult(feature=feature.name, status="skipped"))
-            continue
-        results.append(feature.process(document, options))
-    return document, results
+
+    agent_result = agent_graph.invoke(
+        {
+            "document": document,
+            "options": options,
+            "selected_features": [feature.name for feature in features],
+        }
+    )
+
+    return document, agent_result["results"]
 
 
 def _print_results(path: str, results: list[FeatureResult]) -> None:

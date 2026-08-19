@@ -2,3 +2,5 @@ PyMuPDF
 python-docx
 openpyxl
 pytest
+transformers
+torch

@@ -28,10 +28,7 @@ from common.contracts import Document, FeatureResult, Finding
 from .model import get_model
 from .preprocessing import is_protected_term, load_terminology, split_sentences
 from .utils import word_level_changes
-
 logger = logging.getLogger(__name__)
-
-
 class SpellCheckService:
     name = "spell_check"
 
@@ -51,19 +48,43 @@ class SpellCheckService:
     ) -> FeatureResult:
         try:
             findings: list[Finding] = []
+
             for para in document.paragraphs:
                 for sentence in split_sentences(para.text):
                     corrected = self._model.correct(sentence)
+
                     for change in word_level_changes(sentence, corrected):
-                        if is_protected_term(change.original, self._terminology):
+                        protected = is_protected_term(
+                            change.original,
+                            self._terminology,
+                        )
+                        if protected:
                             continue
-                        findings.append(_to_finding(
-                            self.name, change, sentence, corrected, para.page, para.index
-                        ))
-            return FeatureResult(feature=self.name, status="ok", findings=findings)
-        except Exception as exc:  # process() must never raise
-            logger.exception("spell_check failed")
-            return FeatureResult(feature=self.name, status="failed", error=str(exc))
+
+                        findings.append(
+                            _to_finding(
+                                self.name,
+                                change,
+                                sentence,
+                                corrected,
+                                para.page,
+                                para.index,
+                            )
+                        )
+
+            return FeatureResult(
+                feature=self.name,
+                status="ok",
+                findings=findings,
+            )
+
+        except Exception as exc:
+            logger.exception("SpellCheckService.process failed")
+            return FeatureResult(
+                feature=self.name,
+                status="failed",
+                error=str(exc),
+            )
 
     def report_columns(self) -> list[str]:
         return [

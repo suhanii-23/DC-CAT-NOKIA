@@ -8,7 +8,6 @@ Examples:
     python -m app.cli fixtures/sample.pdf --features broken_links --excel bl.xlsx
     python -m app.cli docs/ --features keyword_search --query authentication
 """
-
 from __future__ import annotations
 
 import argparse
@@ -51,6 +50,10 @@ NOT_YET_IMPLEMENTED: list[str] = [name for name, f in _loaded if f is None]
 ALL_FEATURE_NAMES: list[str] = [path.split(".")[1] for path, _name in _FEATURE_SOURCES]
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
+
+# Detail keys worth surfacing on the terminal, in the order features tend to
+# fill them. Everything else stays in the Excel report.
+_SUGGESTION_KEYS = ("suggested_heading", "suggestion", "suggested_correction")
 
 
 def _collect_files(target: str) -> list[str]:
@@ -114,6 +117,40 @@ def _run_document(
     return document, agent_result["results"]
 
 
+def _finding_detail(finding) -> str:
+    """One-line follow-up under a finding: the suggested fix and its confidence.
+
+    Feature-agnostic: each feature stores its suggestion under its own key in
+    Finding.details, so the first matching key wins. An empty string means
+    there is nothing extra worth printing.
+    """
+    details = finding.details or {}
+
+    suggestion = None
+    for key in _SUGGESTION_KEYS:
+        value = details.get(key)
+        if value:
+            suggestion = value
+            break
+
+    parts = []
+    if suggestion:
+        page = details.get("suggested_page")
+        parts.append(f"suggested: {suggestion}" + (f" (p{page})" if page else ""))
+    elif details.get("reference_type"):
+        # A reference we understood but could not resolve — saying so is the
+        # point, since refusing to guess is the designed behaviour.
+        parts.append("no confident suggestion")
+
+    confidence = finding.confidence
+    if confidence is None:
+        confidence = details.get("suggestion_confidence")
+    if confidence is not None:
+        parts.append(f"confidence {confidence:.2f}")
+
+    return "  |  ".join(parts)
+
+
 def _print_results(path: str, results: list[FeatureResult]) -> None:
     print(f"\n=== {path} ===")
     for result in results:
@@ -123,6 +160,9 @@ def _print_results(path: str, results: list[FeatureResult]) -> None:
         for finding in result.findings:
             page = f"p{finding.page}" if finding.page is not None else "-"
             print(f"  - ({page}) {finding.message}")
+            detail = _finding_detail(finding)
+            if detail:
+                print(f"        {detail}")
 
 
 def main(argv: Optional[list[str]] = None) -> int:

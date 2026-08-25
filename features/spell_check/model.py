@@ -86,7 +86,7 @@ class T5CorrectionModel:
         if self._ensure_model():
             try:
                 ids = self._tokenizer(
-                    "grammar: " + sentence, return_tensors="pt"
+                    "Fix spelling errors only. Do not change grammar, wording, plurality, punctuation, or meaning: " + sentence, return_tensors="pt"
                 ).input_ids
                 out = self._model.generate(ids, max_length=128)
                 return self._tokenizer.decode(out[0], skip_special_tokens=True)

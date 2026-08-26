@@ -4,6 +4,7 @@ openpyxl
 pytest
 transformers
 torch
+langgraph
 langchain
 
 # Semantic keyword search (BAAI/bge-base-en-v1.5 + FAISS IndexFlatIP).

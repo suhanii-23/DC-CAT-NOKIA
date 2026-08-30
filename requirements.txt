@@ -5,7 +5,6 @@ pytest
 transformers
 torch
 langgraph
-langchain
 
 # Semantic keyword search (BAAI/bge-base-en-v1.5 + FAISS IndexFlatIP).
 # Model weights are provisioned manually and are never downloaded at

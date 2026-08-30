@@ -165,5 +165,38 @@ except ImportError:  # pragma: no cover
     pass
 
 
+try:
+    from features.multi_doc_keyword_search.service import MultiDocKeywordSearchService
+
+    _multi_doc_keyword_search = MultiDocKeywordSearchService()
+
+    @mcp.tool()
+    def search_documents_for_keyword(paths: list[str], keyword: str) -> dict:
+        """Find every occurrence of ONE exact keyword across MANY PDF or Word
+        documents at once.
+
+        `paths` may name files, folders (walked recursively for .pdf/.docx),
+        or a mix. Every eligible document is searched — the search never
+        stops at the first document or the first hit.
+
+        This is a literal search, not a meaning-based one: only the exact
+        keyword given is looked for, matched case-insensitively on whole
+        words. It never expands the keyword into synonyms or related terms,
+        so "authentication" does not find "login". Use search_document
+        instead when you want meaning-based matches within a single file.
+
+        Returns results grouped by document — each match with its page, the
+        text as it actually appears, and the surrounding sentence — plus the
+        number of documents searched, how many contained matches, and the
+        total match count. Documents that could not be read are listed under
+        "errors" without stopping the rest of the search.
+        """
+        result = _multi_doc_keyword_search.search(paths, keyword)
+        return result.to_dict(limit_per_document=MAX_FINDINGS)
+
+except ImportError:  # pragma: no cover
+    pass
+
+
 if __name__ == "__main__":
     mcp.run()

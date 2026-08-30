@@ -37,6 +37,7 @@ def _parse_pdf(path: str) -> Document:
         pages: list[Page] = []
         paragraphs: list[Paragraph] = []
         para_index = 0
+
         for page_index in range(doc.page_count):
             page = doc[page_index]
             page_number = page_index + 1
@@ -56,6 +57,15 @@ def _parse_pdf(path: str) -> Document:
             headings.append(
                 Heading(text=clean_title, level=level, number=number, page=page_number)
             )
+
+        # Named destinations actually defined in this PDF, resolved once for the
+        # whole document. Without this every named link looks unresolvable, and
+        # broken-link detection flags every cross-reference in a real document:
+        # a Nokia user guide with 76 working links reported 76 broken ones.
+        try:
+            named_destinations = doc.resolve_names() or {}
+        except Exception:  # older PyMuPDF, or a malformed name tree
+            named_destinations = {}
 
         links: list[LinkAnnotation] = []
         for page_index in range(doc.page_count):
@@ -78,12 +88,22 @@ def _parse_pdf(path: str) -> Document:
                         )
                     )
                 elif kind == fitz.LINK_NAMED:
+                    name = link.get("nameddest") or link.get("name")
+                    destination = named_destinations.get(name)
+                    resolved_page = None
+                    if isinstance(destination, dict):
+                        page_index_value = destination.get("page")
+                        if isinstance(page_index_value, int) and page_index_value >= 0:
+                            resolved_page = page_index_value + 1
                     links.append(
                         LinkAnnotation(
                             page=page_number,
                             text=link_text,
-                            target_page=None,
-                            target_name=link.get("nameddest") or link.get("name"),
+                            # Resolved to a real page when the destination exists
+                            # in this document; left as None when it does not,
+                            # which is what makes the link broken.
+                            target_page=resolved_page,
+                            target_name=name,
                             is_internal=True,
                         )
                     )
@@ -126,7 +146,6 @@ def _parse_docx(path: str) -> Document:
             continue
         paragraphs.append(Paragraph(text=text, page=1, index=index))
         full_text_parts.append(text)
-
         style_name = (para.style.name if para.style is not None else "") or ""
         if style_name.lower().startswith("heading"):
             level_digits = "".join(ch for ch in style_name if ch.isdigit())

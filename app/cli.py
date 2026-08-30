@@ -15,10 +15,19 @@ import importlib
 import os
 import sys
 from typing import Optional
-from app.agent.graph import agent_graph
+
 from common import excel
 from common.contracts import Document, FeatureModule, FeatureResult
 from common.parser import parse
+
+# The LangGraph agent orchestrates the feature services. It is optional: if
+# langgraph is not installed the CLI falls back to calling the services
+# directly, so a missing orchestration dependency never takes down features
+# that do not need it — broken_links, for one, has no dependencies at all.
+try:
+    from app.agent.graph import agent_graph
+except ImportError:  # pragma: no cover - exercised only without langgraph
+    agent_graph = None
 
 # Each entry is (module path, class name). A feature whose service.py is
 # still empty (class not written yet) is skipped rather than crashing the
@@ -106,6 +115,9 @@ def _run_document(
 ) -> tuple[Document, list[FeatureResult]]:
     document = parse(path)
 
+    if agent_graph is None:
+        return document, _run_features_directly(document, options, features)
+
     agent_result = agent_graph.invoke(
         {
             "document": document,
@@ -115,6 +127,23 @@ def _run_document(
     )
 
     return document, agent_result["results"]
+
+
+def _run_features_directly(
+    document: Document, options: dict, features: list[FeatureModule]
+) -> list[FeatureResult]:
+    """Fallback used when the agent graph is unavailable.
+
+    Produces the same results in the same order as the graph, so output does
+    not depend on whether langgraph happens to be installed.
+    """
+    results: list[FeatureResult] = []
+    for feature in features:
+        if not feature.is_available() or not feature.supports(document):
+            results.append(FeatureResult(feature=feature.name, status="skipped"))
+            continue
+        results.append(feature.process(document, options))
+    return results
 
 
 def _finding_detail(finding) -> str:

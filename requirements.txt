@@ -4,6 +4,10 @@ openpyxl
 pytest
 transformers
 torch
+numpy
+sentence-transformers
+faiss-cpu
+mcp
 langgraph
 
 # Semantic keyword search (BAAI/bge-base-en-v1.5 + FAISS IndexFlatIP).
@@ -13,7 +17,4 @@ langgraph
 # that pulls ~2.5 GB of CUDA wheels; install CPU-only torch first to
 # avoid it:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
-numpy
-sentence-transformers
-faiss-cpu
-mcp
+

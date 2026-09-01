@@ -13,6 +13,16 @@ a shared contract.
   **not in the repo** — see [Semantic search setup](#semantic-search-setup-bge-weights).
 - `spell_check` — **not started**. `features/spell_check/service.py` is
   an empty file, waiting on its owner.
+- `multi_doc_keyword_search` — **done**. One exact keyword across many
+  documents at once, purely lexical. A *corpus* feature: it runs once
+  over the whole document set rather than once per document, through its
+  own LangGraph graph (`corpus_graph`). Separate
+  from `keyword_search`, which it neither imports nor changes — see
+  [Multi-document keyword search](#multi-document-keyword-search).
+
+`app/cli.py`, `app/agent/graph.py` and `app/mcp_server.py` are the
+integration points; the search itself lives entirely in
+`features/multi_doc_keyword_search/` and all three only delegate to it.
 
 This is expected, not broken: `app/cli.py` and `tests/test_contract.py`
 both load each feature's class dynamically and skip it if it isn't
@@ -73,6 +83,13 @@ common/excel.py                Summary sheet + one sheet per feature
 features/broken_links/         worked example — done, fully implemented
 features/keyword_search/       done — lexical + BGE/FAISS semantic search
 features/spell_check/          empty — not started, owner TBD
+features/multi_doc_keyword_search/
+                               done — one exact keyword across many documents,
+                                lexical only; matcher.py (the only matching
+                                logic) / discovery.py / service.py / cli.py
+app/agent/state.py             AgentState (one document) + CorpusState (many)
+app/agent/graph.py             agent_graph (per document) + corpus_graph (per run)
+app/mcp_server.py              the features exposed as MCP tools
 app/cli.py                     python -m app.cli <file|folder> --query X --excel out.xlsx
                                 (loads feature classes dynamically; skips ones not yet written)
 fixtures/make_fixture.py       generates fixtures/sample.pdf for local testing
@@ -82,6 +99,13 @@ tests/test_keyword_search.py   lexical pass
 tests/test_keyword_search_semantic.py
                                chunking/selection, a fake encoder, and real-model
                                 tests that skip when the weights are absent
+tests/test_multi_doc_keyword_search.py
+                               the feature itself
+tests/test_multi_doc_keyword_search_cli.py
+                               its standalone CLI and Excel policy
+tests/test_multi_doc_keyword_search_integration.py
+                               its wiring into app/cli.py, app/agent/graph.py
+                                and app/mcp_server.py
 ```
 
 ## Setup
@@ -278,6 +302,173 @@ walk.
   words (e.g. "the" fuzzy-matches "then", "for" fuzzy-matches "form") —
   guard with a common-words stoplist and a minimum word length before
   falling back to fuzzy matching.
+- **multi_doc_keyword_search** (done): one exact keyword across many
+  documents, one finding per occurrence. The only *corpus* feature —
+  see the next section.
+
+## Multi-document keyword search
+
+Give it **one keyword** and a set of documents; get back **every**
+occurrence, grouped by document, with page and surrounding text. It never
+stops at the first document, the first page, or the first hit.
+
+```text
+User
+ │  keyword = "authentication"
+ ▼
+multi_doc_keyword_search
+ ├── document1.pdf   page 2, page 8
+ ├── document2.pdf   page 4
+ └── document3.pdf   no matches
+                     ▼
+        3 matches across 2 of 3 documents
+```
+
+### A corpus feature, not a per-document one
+
+The other three features run once **per document**: `app/cli.py` parses a
+file and `agent_graph` fans it out to the selected feature nodes. This one
+runs once over the **whole set**, because the answer it gives — totals,
+and which documents matched — only exists across documents.
+
+That is a genuine mismatch with `AgentState`, which holds a single
+`document`: making this a node in `agent_graph` would run it once per
+file, which is exactly the wrong answer. So it gets its own LangGraph
+graph in the same module — still LangGraph, still one orchestrator, no
+second execution system:
+
+```text
+app/agent/state.py    AgentState (one document)  |  CorpusState (paths)
+app/agent/graph.py    agent_graph                |  corpus_graph
+                        spell_check              |    multi_doc_keyword_search
+                        broken_links             |    collect_results
+                        keyword_search           |
+                        collect_results          |
+app/cli.py            invoked once per file      |  invoked once per run
+```
+
+Both graphs are optional in the same way: `app/cli.py` imports them in one
+`try`, and falls back to calling the services directly
+(`_run_features_directly` / `_run_corpus_features_directly`) when
+`langgraph` isn't installed, producing identical results either way. The
+graph nodes only delegate — `run_multi_doc_keyword_search` calls
+`MultiDocKeywordSearchService.search()` and holds no matching logic.
+
+`app/cli.py` keeps the two kinds in separate lists (`_FEATURE_SOURCES` and
+`_CORPUS_SOURCES`) because they are invoked differently, but
+**`--features all` runs both kinds** — "all" means all. Nothing in the
+project requires corpus features to be held back, and a feature you cannot
+reach from the documented command is one nobody will use.
+
+The one special case: a keyword-driven corpus feature has nothing to do
+without a keyword, so **`--features all` with no `--query` reports it as
+`skipped`**, not as a failure, and prints a note to stderr. That keeps
+`python -m app.cli fixtures/sample.pdf --excel report.xlsx` working
+exactly as documented. Searching for the empty string is never the
+intent; at the service and MCP layer an explicitly empty keyword is still
+a validation failure.
+
+```bash
+python -m app.cli docs/ --query authentication                     # all, incl. corpus
+python -m app.cli docs/ --features multi_doc_keyword_search --query authentication
+python -m app.cli docs/ --features broken_links,multi_doc_keyword_search --query auth
+python -m app.cli docs/ --features multi_doc_keyword_search --query auth --excel out.xlsx
+```
+
+```text
+=== multi_doc_keyword_search (3 document(s)) ===
+[multi_doc_keyword_search] status=ok findings=3
+  document1.pdf
+    - (p2) ...User authentication is required before accessing the system....
+    - (p8) ...the authentication token expires hourly....
+  document2.pdf
+    - (p4) ...Authentication failures are logged....
+```
+
+The corpus feature contributes one `FeatureResult` to the run, so `--excel`
+gives it a sheet like any other feature: a row per occurrence with page,
+severity, message, keyword, document, occurrence index, paragraph index,
+matched text, and context.
+
+### Through the MCP server
+
+`app/mcp_server.py` registers it as `search_documents_for_keyword(paths,
+keyword)`, alongside the three existing tools, whose behaviour is
+untouched — the tool is a one-line delegation to
+`MultiDocKeywordSearchService.search()`. `paths` takes files,
+folders (walked recursively), or a mix; the payload is grouped by
+document with `documents_searched`, `documents_with_matches` and
+`total_matches`, and per-document match lists capped at 100 with
+`"truncated": true` while the counts stay honest.
+
+### Standalone
+
+The feature also has its own CLI, which adds one convenience the shared
+CLI does not have: a search covering **two or more documents** writes an
+`.xlsx` automatically, named from the keyword.
+
+```bash
+python -m features.multi_doc_keyword_search.cli fixtures/ --keyword authentication
+# -> keyword_matches_authentication.xlsx
+```
+
+`--excel PATH` chooses the path and forces a report even for one
+document; `--no-excel` suppresses it.
+
+### It is not semantic search
+
+No embeddings, no vector index, no FAISS, no sentence-transformers, no
+LLM, no synonyms, no query expansion, no fuzzy matching. Searching
+`authentication` searches for `authentication` and nothing else — it will
+never return `login`, `authorization` or `credentials` the way the
+semantic half of `keyword_search` deliberately does. The keyword the user
+typed is the source of truth.
+
+|  | `keyword_search` | `multi_doc_keyword_search` |
+|---|---|---|
+| Scope | one document per call | many documents per call |
+| Matching | lexical **plus** BGE/FAISS semantic | lexical only |
+| Granularity | occurrence *counts* per paragraph/page | one finding **per occurrence** |
+| Dependencies | model weights for the semantic half | none beyond the shared parser |
+
+### Matching rules
+
+- **Case-insensitive.** `authentication` matches `Authentication`,
+  `AUTHENTICATION`, `AuThEnTiCaTiOn`. `details["match_text"]` reports the
+  casing actually found.
+- **Whole-word.** `authentication` does not match `preauthentication` or
+  `authentications`. Lookarounds rather than `\b`, so a keyword whose
+  edges aren't word characters (`ERR#01`) still matches.
+- **Whitespace-tolerant.** A multi-word keyword still matches across a
+  line break.
+- **Counting unit:** paragraphs where the document has them, pages
+  otherwise — never both, since the parser derives paragraphs *from* page
+  text and counting both would double-count every match.
+
+### Output and errors
+
+Each occurrence is one `Finding`; the frozen contract is untouched and
+everything feature-specific lives in `Finding.details` — `keyword`,
+`document`, `page`, `paragraph_index`, `match_text`, `context`,
+`occurrence_index`. `context` is verbatim document text, never
+paraphrased or generated.
+
+- **Empty or whitespace-only keyword** → `status: "failed"` with a
+  validation message. It never falls back to matching everything.
+- **No matches anywhere** → `status: "ok"`, `total_matches: 0`. Not an
+  error.
+- **A document that can't be read** → recorded in `errors` with its
+  reason, and every other document is still searched. The try/except is
+  per document, so one corrupt PDF in a folder of fifty doesn't cost you
+  the other forty-nine.
+
+### Known limitations
+
+Sequential, no concurrency and no cross-call parse cache. For PDFs the
+shared parser splits paragraphs on `\n\n`, so `paragraph_index` is coarse
+there (page numbers are exact). A match straddling a paragraph or page
+boundary is not found. A keyword containing spaces is one literal phrase,
+not several keywords.
 
 ## New dependencies
 

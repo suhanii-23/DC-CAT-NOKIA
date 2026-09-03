@@ -6,7 +6,7 @@ venv/
 *.egg-info/
 
 # Generated report/fixture artifacts — regenerate with fixtures/make_fixture.py
-fixtures/sample.pdf
+
 *.xlsx
 
 # Locally provisioned BGE model weights — never committed

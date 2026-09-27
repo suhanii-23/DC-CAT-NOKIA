@@ -88,7 +88,7 @@ async def analyze(
                     "findings": [
                         {
                             "feature": finding.feature,
-                            "severity": finding.severity,
+
                             "page": finding.page,
                             "message": finding.message,
                             "confidence": finding.confidence,
@@ -187,7 +187,7 @@ async def analyze_multiple(
                                 "findings": [
                                     {
                                         "feature": finding.feature,
-                                        "severity": finding.severity,
+
                                         "page": finding.page,
                                         "message": finding.message,
                                         "confidence": finding.confidence,
@@ -232,7 +232,7 @@ async def analyze_multiple(
                             "findings": [
                                 {
                                     "feature": finding.feature,
-                                    "severity": finding.severity,
+
                                     "page": finding.page,
                                     "message": finding.message,
                                     "confidence": finding.confidence,

@@ -10,8 +10,7 @@ from openpyxl import Workbook
 
 from common.contracts import FeatureResult
 
-_BASE_COLUMNS = ["page", "severity", "message", "confidence"]
-
+_BASE_COLUMNS = ["page", "message", "confidence"]
 
 def write_report(
     results: Iterable[FeatureResult],
@@ -38,7 +37,7 @@ def write_report(
         extra_columns = columns_by_feature.get(result.feature, [])
         sheet.append(_BASE_COLUMNS + extra_columns)
         for finding in result.findings:
-            row = [finding.page, finding.severity, finding.message, finding.confidence]
+            row = [finding.page, finding.message, finding.confidence]
             row += [_to_cell_value(finding.details.get(col)) for col in extra_columns]
             sheet.append(row)
 

@@ -140,7 +140,7 @@ class BrokenLinksService:
                 findings.append(
                     Finding(
                         feature=self.name,
-                        severity="warning",
+
                         page=link.page,
                         message=(
                             f"Broken {reference_type or 'internal'} reference "
@@ -296,7 +296,7 @@ def _prose_findings(
             findings.append(
                 Finding(
                     feature="broken_links",
-                    severity="warning",
+
                     page=paragraph.page,
                     message=(
                         f"Reference to {kind} {number} but the document has no "
@@ -359,7 +359,7 @@ def _missing_reference_findings(document: Document) -> list[Finding]:
             findings.append(
                 Finding(
                     feature="broken_links",
-                    severity="warning",
+
                     page=paragraph.page,
                     # The sentence is the finding: a reviewer needs to see the
                     # gap to judge it, and there is no number to quote.

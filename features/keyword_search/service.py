@@ -566,7 +566,7 @@ def _summary_finding(
     page_list = ", ".join(str(page) for page in pages)
     return Finding(
         feature=feature,
-        severity="info",
+
         page=pages[0],
         message=f"{query!r} found {occurrences} time(s) on page(s) {page_list}",
         confidence=None,
@@ -590,7 +590,7 @@ def _unit_finding(feature: str, query: str, hit: _UnitHit) -> Finding:
         where += f", paragraph {hit.unit.paragraph_index}"
     return Finding(
         feature=feature,
-        severity="info",
+
         page=hit.unit.page,
         message=f"{query!r} found {hit.occurrences} time(s) on {where}",
         confidence=None,
@@ -624,7 +624,7 @@ def _semantic_finding(feature: str, query: str, score: float, chunk: _Chunk) -> 
     band = _relevance_band(score)
     return Finding(
         feature=feature,
-        severity="info",
+
         page=chunk.page,
         # States the strength rather than asserting the passage *is*
         # related: with no calibrated floor, a query unrelated to the

@@ -387,8 +387,9 @@ python -m app.cli docs/ --features multi_doc_keyword_search --query auth --excel
 
 The corpus feature contributes one `FeatureResult` to the run, so `--excel`
 gives it a sheet like any other feature: a row per occurrence with page,
-severity, message, keyword, document, occurrence index, paragraph index,
+message, keyword, document, occurrence index, paragraph index,
 matched text, and context.
+
 
 ### Through the MCP server
 

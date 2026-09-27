@@ -462,7 +462,7 @@ def test_report_columns_cover_every_detail_key():
     service = _service()
     result = service.search_documents([_pdf_doc(["authentication"])], "authentication")
 
-    base_columns = {"page", "severity", "message", "confidence"}
+    base_columns = {"page", "message", "confidence"}
     covered = set(service.report_columns()) | base_columns
     for finding in result.findings():
         assert set(finding.details) <= covered

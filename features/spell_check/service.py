@@ -38,10 +38,43 @@ def _is_verified_spelling_change(original: str, suggestion: str) -> bool:
     original_frequency = zipf_frequency(original.lower(), "en")
     suggestion_frequency = zipf_frequency(suggestion.lower(), "en")
 
+def _is_verified_spelling_change(original: str, suggestion: str) -> bool:
+    """Reject common-word changes unless they look like a likely typo."""
+    original_frequency = zipf_frequency(original.lower(), "en")
+    suggestion_frequency = zipf_frequency(suggestion.lower(), "en")
+
     if (
         original_frequency >= _COMMON_WORD_THRESHOLD
         and suggestion_frequency >= _COMMON_WORD_THRESHOLD
     ):
+        # If both are common words, only allow a likely typo pattern.
+        if len(original) != len(suggestion):
+            return False
+
+        original_lower = original.lower()
+        suggestion_lower = suggestion.lower()
+
+        differences = [
+            index
+            for index, (left, right) in enumerate(
+                zip(original_lower, suggestion_lower)
+            )
+            if left != right
+        ]
+
+        # Allow a simple adjacent-character transposition:
+        # form -> from
+        if len(differences) == 2:
+            first, second = differences
+            if (
+                second == first + 1
+                and original_lower[first] == suggestion_lower[second]
+                and original_lower[second] == suggestion_lower[first]
+            ):
+                return True
+
+        # Otherwise, two common valid words should not be treated
+        # as a spelling correction.
         return False
 
     return True
@@ -121,7 +154,7 @@ class SpellCheckService:
                 status="failed",
                 error=str(exc),
             )
-            
+
 
     def report_columns(self) -> list[str]:
         return [
@@ -132,13 +165,12 @@ class SpellCheckService:
 
 def _to_finding(feature, change, sentence, corrected, page, paragraph_index) -> Finding:
     return Finding(
-        feature=feature,
-        severity="warning",
-        page=page,
-        message=f"Possible spelling error: {change.original!r} -> "
-                f"{change.suggestion!r}",
-        confidence=None,
-        details={
+    feature=feature,
+    page=page,
+    message=f"Possible spelling error: {change.original!r} -> "
+            f"{change.suggestion!r}",
+    confidence=None,
+    details={
             "word": change.original,
             "suggestion": change.suggestion,
             "incorrect_word": change.original,

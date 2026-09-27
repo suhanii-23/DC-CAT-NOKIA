@@ -34,7 +34,6 @@ type IconName =
   | 'check'
   | 'document'
 
-type Severity = 'High' | 'Medium' | 'Low'
 
 type PageCountSource = 'client' | 'backend' | 'unavailable'
 
@@ -67,7 +66,7 @@ type Finding = {
   finding: string
   suggestion: string
   confidence?: number | null
-  severity: Severity
+
   original?: string
   context?: string
   correctedSentence?: string
@@ -297,7 +296,6 @@ function App() {
   const [search, setSearch] = useState('')
   const [documentFilter, setDocumentFilter] = useState('all')
   const [featureFilter, setFeatureFilter] = useState('all')
-  const [severityFilter, setSeverityFilter] = useState('all')
   const [keywordQuery, setKeywordQuery] = useState('')
   const [zoom, setZoom] = useState(1)
   const [viewerState, setViewerState] = useState<
@@ -384,13 +382,13 @@ function App() {
             const characterWidth = itemWidth / textItem.str.length
 
             const paddingX = 3
-const paddingY = 2
+
 
 setHighlightBox({
-  x: transform[4] + startIndex * characterWidth - paddingX,
-  y: transform[5] - fontHeight - paddingY,
-  width: targetText.length * characterWidth + paddingX * 2,
-  height: fontHeight + paddingY * 2,
+  x: transform[4] + startIndex * characterWidth ,
+  y: transform[5] - fontHeight + 1,
+width: targetText.length * characterWidth + paddingX * 2,
+height: fontHeight,
 })
           } else {
             setHighlightBox(null)
@@ -592,11 +590,7 @@ const featureIdMap: Record<string, string> = {
         multi_doc_keyword_search: 'keyword-search',
       }
 
-      const severityMap: Record<string, Severity> = {
-        warning: 'Medium',
-        error: 'High',
-        info: 'Low',
-      }
+
 
       let nextFindingId = 1
 
@@ -608,7 +602,7 @@ const featureIdMap: Record<string, string> = {
           results: Array<{
             feature: string
             findings: Array<{
-              severity: string
+
               page: number | null
               message: string
               confidence?: number | null
@@ -656,11 +650,13 @@ const featureIdMap: Record<string, string> = {
                       : suggestedHeading
                     : '—'),
                 confidence: finding.confidence,
-                severity:
-                  severityMap[finding.severity] ?? 'Medium',
+
                 original:
                   finding.details?.incorrect_word ??
-                  finding.details?.word,
+                  finding.details?.word ??
+                  (featureIdMap[result.feature] === 'keyword-search'
+                    ? keywordQuery.trim()
+                    : undefined),
                 context:
                   finding.details?.original_sentence ??
                   (finding.details?.reference_type === 'Cross-reference'
@@ -736,7 +732,6 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
   setSearch('')
   setDocumentFilter('all')
   setFeatureFilter('all')
-  setSeverityFilter('all')
   setKeywordQuery('')
   setZoom(1)
   setViewerState('idle')
@@ -753,7 +748,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
     localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
   }
     const navigate = (label: string) => {
-      
+
     setScreen(
   label === 'Home'
     ? 'home'
@@ -795,7 +790,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
   }
     const resultFindings = analysisResult?.findings ?? []
 
-  
+
 
   const showAdjacentFinding = (offset: number) => {
   const currentIndex = filteredFindings.findIndex(
@@ -900,7 +895,6 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
       .map((finding) => ({
         Document: finding.documentName,
         Page: finding.page,
-        Severity: finding.severity,
         Message: `Possible spelling error: ${
           finding.original ?? finding.finding
         } → ${finding.suggestion}`,
@@ -924,17 +918,16 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
       )
 
       formatSheet(sheet, [
-        10,
-        14,
-        45,
-        14,
-        20,
-        24,
-        24,
-        55,
-        55,
-        18,
-      ])
+  28,
+  10,
+  55,
+  14,
+  24,
+  24,
+  55,
+  55,
+  18,
+])
 
       XLSX.utils.book_append_sheet(
         workbook,
@@ -953,7 +946,6 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
       .map((finding) => ({
         Document: finding.documentName,
         Page: finding.page,
-        Severity: finding.severity,
         Message: finding.finding,
         Suggestion:
           finding.suggestion === '—'
@@ -1052,8 +1044,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
         finding.documentName === documentFilter) &&
       (featureFilter === 'all' ||
         finding.featureId === featureFilter) &&
-      (severityFilter === 'all' ||
-        finding.severity === severityFilter) &&
+
       (
         `${finding.documentName} ${finding.page} ${
           featureById(finding.featureId)?.name
@@ -1427,17 +1418,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
                 ))}
             </select>
 
-            <select
-              value={severityFilter}
-              onChange={(event) =>
-                setSeverityFilter(event.target.value)
-              }
-            >
-              <option value="all">All severities</option>
-              <option>High</option>
-              <option>Medium</option>
-              <option>Low</option>
-            </select>
+
           </div>
         </div>
 
@@ -1452,7 +1433,6 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
                 <th>Finding</th>
                 <th>Suggestion</th>
                 <th>Confidence</th>
-                <th>Severity</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -1473,13 +1453,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
                       ? ''
                       : finding.confidence.toFixed(2)}
                   </td>
-                  <td>
-                    <span
-                      className={`severity ${finding.severity.toLowerCase()}`}
-                    >
-                      {finding.severity}
-                    </span>
-                  </td>
+
                   <td>
                     <button
                       className="open-finding"
@@ -1576,17 +1550,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
               </dd>
             </div>
 
-            <div>
-              <dt>Severity</dt>
 
-              <dd>
-                <span
-                  className={`severity ${activeFinding.severity.toLowerCase()}`}
-                >
-                  {activeFinding.severity}
-                </span>
-              </dd>
-            </div>
           </dl>
 
           {activeFinding.context && (

@@ -305,7 +305,7 @@ mcp_server = pytest.importorskip(
 def _finding(match_type: str, index: int) -> Finding:
     return Finding(
         feature="keyword_search",
-        severity="info",
+
         page=1,
         message=f"{match_type} {index}",
         confidence=None,
@@ -385,7 +385,7 @@ def test_features_without_match_type_keep_the_plain_head_slice():
     """broken_links and spell_check have no scarce class; behaviour for them
     must be identical to the original findings[:limit]."""
     plain = [
-        Finding(feature="broken_links", severity="warning", page=1,
+        Finding(feature="broken_links", page=1,
                 message=f"m{i}", confidence=None, details={"reason": "x"})
         for i in range(mcp_server.MAX_FINDINGS + 10)
     ]

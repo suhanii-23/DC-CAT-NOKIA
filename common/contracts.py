@@ -57,13 +57,16 @@ class Document:
 
 @dataclass
 class Finding:
-    feature: str
-    severity: str  # "info" | "warning" | "error"
-    page: Optional[int]
-    message: str
-    confidence: Optional[float] = None
-    details: dict[str, Any] = field(default_factory=dict)
 
+    feature: str
+
+    page: Optional[int]
+
+    message: str
+
+    confidence: Optional[float] = None
+
+    details: dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class FeatureResult:

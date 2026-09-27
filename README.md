@@ -403,17 +403,39 @@ document with `documents_searched`, `documents_with_matches` and
 
 ### Standalone
 
-The feature also has its own CLI, which adds one convenience the shared
-CLI does not have: a search covering **two or more documents** writes an
-`.xlsx` automatically, named from the keyword.
+The feature also has its own CLI: **N documents + 1 keyword → 1 XLSX**.
+Pass files, folders, or both. A search covering **two or more documents**
+writes an `.xlsx` automatically, named from the keyword.
 
 ```bash
+python -m features.multi_doc_keyword_search.cli document1.pdf document2.pdf document3.pdf \
+    --keyword embedded --excel report.xlsx
 python -m features.multi_doc_keyword_search.cli fixtures/ --keyword authentication
 # -> keyword_matches_authentication.xlsx
 ```
 
 `--excel PATH` chooses the path and forces a report even for one
 document; `--no-excel` suppresses it.
+
+The report is one sheet, **Keyword Search**, one row per occurrence:
+
+| Document | Page | Keyword | Match | Context |
+|---|---|---|---|---|
+| document1.pdf | 29 | embedded | embedded | …wireless technology and embedded systems, the cost of hardware… |
+
+`Match` is the word as the document writes it (casing kept); `Context` is
+the surrounding sentence, or a word-trimmed window when the sentence is
+very long. Header row frozen and filterable, `Context` wrapped. No
+severity, confidence or other analysis columns: this is a location
+report, not a findings report, so it is written by
+`features/multi_doc_keyword_search/report.py` rather than the shared
+`common/excel.py` (which always adds those columns). `app/cli.py` still
+reports the feature through `common/excel.py`, unchanged.
+
+The terminal gets a short summary: matches per document, the total, and
+the report path. A PDF whose pages are mostly images with no text layer
+is marked as probably scanned, because a `0` there means "could not be
+searched", not "not mentioned".
 
 ### It is not semantic search
 
@@ -441,9 +463,17 @@ typed is the source of truth.
   edges aren't word characters (`ERR#01`) still matches.
 - **Whitespace-tolerant.** A multi-word keyword still matches across a
   line break.
+- **Hyphenation-tolerant.** A word split across two lines (`em-` / `bedded`)
+  or carrying soft hyphens (U+00AD — one 570-page textbook has 1,699 at
+  line ends) still matches, and `Match` shows it as one word.
 - **Counting unit:** paragraphs where the document has them, pages
   otherwise — never both, since the parser derives paragraphs *from* page
   text and counting both would double-count every match.
+- **Reading from disk:** `search()` reads a PDF's page text straight from
+  PyMuPDF rather than running the full shared parser, whose paragraph,
+  link and outline extraction a keyword search never uses. On a 748-page
+  scanned book that cut reading from ~126 s to under 2 s. DOCX still goes
+  through the shared parser.
 
 ### Output and errors
 
@@ -464,11 +494,13 @@ paraphrased or generated.
 
 ### Known limitations
 
-Sequential, no concurrency and no cross-call parse cache. For PDFs the
-shared parser splits paragraphs on `\n\n`, so `paragraph_index` is coarse
-there (page numbers are exact). A match straddling a paragraph or page
+Sequential, no concurrency and no cross-call parse cache. PDFs searched
+from disk are searched per page, so `paragraph_index` is empty for them
+(page numbers are exact). A match straddling a paragraph or page
 boundary is not found. A keyword containing spaces is one literal phrase,
-not several keywords.
+not several keywords. Scanned PDFs have no text to search; there is no
+OCR. DOCX text inside tables, headers and footers is not searched, because
+the shared parser reads body paragraphs only.
 
 ## New dependencies
 

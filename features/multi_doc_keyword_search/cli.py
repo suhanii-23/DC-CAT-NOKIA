@@ -6,20 +6,26 @@ belongs to everyone. It is also a separate command on purpose — app/cli.py
 runs the per-document feature suite, and folding a multi-document feature
 into its `--features all` run would change what an existing command
 prints. This one does a single job: one keyword, many documents, every
-occurrence.
+occurrence, one report.
 
 Usage:
     python -m features.multi_doc_keyword_search.cli <file|folder> [more...]
                                    --keyword TEXT [--excel PATH | --no-excel]
 
 Examples:
-    python -m features.multi_doc_keyword_search.cli fixtures/ --keyword authentication
-    python -m features.multi_doc_keyword_search.cli docs/ --keyword MOCN --excel out.xlsx
+    python -m features.multi_doc_keyword_search.cli document1.pdf document2.pdf \
+        document3.pdf --keyword embedded --excel report.xlsx
+    python -m features.multi_doc_keyword_search.cli docs/ --keyword MOCN
 
 Excel output: a search that covered two or more documents writes an .xlsx
-report automatically — that is the case where scrolling terminal output
-stops being usable. `--excel PATH` picks the path (and forces a report
-even for a single document); `--no-excel` suppresses it entirely.
+report automatically, named after the keyword. `--excel PATH` picks the
+path (and forces a report even for a single document); `--no-excel`
+suppresses it entirely. The report has one sheet with the columns
+Document, Page, Keyword, Match and Context — see report.py.
+
+Terminal output is a short summary: matches per document and in total.
+When no report is written, every match is also listed, since the
+terminal is then the only place to see them.
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ import re
 import sys
 from typing import Optional
 
-from common import excel
+from features.multi_doc_keyword_search.report import write_xlsx
 from features.multi_doc_keyword_search.service import (
     MultiDocKeywordSearchService,
     MultiDocSearchResult,
@@ -54,28 +60,47 @@ def _default_report_path(keyword: str) -> str:
     return f"keyword_matches_{slug or 'search'}.xlsx"
 
 
-def _print_result(result: MultiDocSearchResult) -> None:
-    print(f"Search keyword: {result.keyword}")
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}es"
 
+
+def _print_matches(result: MultiDocSearchResult) -> None:
+    """Every match, grouped by document and page."""
+    names = result.document_names()
     for document in result.documents:
         if not document.match_count:
             continue
-        print(f"\n{document.path}  ({document.match_count} match(es))")
+        print(f"\n{names[document.path]}  ({_plural(document.match_count, 'match')})")
         current_page: Optional[int] = None
         for finding in document.findings:
             if finding.page != current_page:
                 current_page = finding.page
                 print(f"  Page {current_page}")
             print(f"    {finding.details['context']}")
+    print()
 
-    print(
-        f"\nDocuments searched: {result.documents_searched}"
-        f" | with matches: {result.documents_with_matches}"
-        f" | total matches: {result.total_matches}"
-    )
 
-    if not result.total_matches and result.status == "ok":
-        print("No matches found.")
+def _print_summary(result: MultiDocSearchResult, report_path: Optional[str]) -> None:
+    names = result.document_names()
+    print("Multi-document keyword search completed.")
+    print()
+    print(f"Keyword: {result.keyword}")
+    print(f"Documents searched: {result.documents_searched}")
+    for document in result.documents:
+        line = f"  {names[document.path]}: {_plural(document.match_count, 'match')}"
+        if document.looks_scanned:
+            line += (
+                "  (almost no extractable text: probably scanned images, "
+                "so this document could not really be searched)"
+            )
+        print(line)
+    if result.errors:
+        print(f"Skipped: {len(result.errors)} (reasons below)")
+    print(f"Total matches: {result.total_matches}")
+    if report_path:
+        print(f"Output: {report_path}")
+    if not result.total_matches:
+        print(f"No matches found for keyword: {result.keyword}")
 
     for problem in result.errors:
         print(f"(skipped {problem['document']}: {problem['error']})", file=sys.stderr)
@@ -85,8 +110,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     arg_parser = argparse.ArgumentParser(
         prog="python -m features.multi_doc_keyword_search.cli",
         description=(
-            "Search one exact keyword across many PDF/DOCX documents. "
-            "Literal, case-insensitive, whole-word — never semantic."
+            "Search one exact keyword across many PDF/DOCX documents and "
+            "write one Excel report. Literal, case-insensitive, whole-word "
+            "— never semantic."
         ),
     )
     arg_parser.add_argument(
@@ -116,17 +142,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"Search failed: {result.error}", file=sys.stderr)
         return 2
 
-    _print_result(result)
+    report_path = _report_path(args, result)
+    if report_path:
+        try:
+            write_xlsx(result, report_path)
+        except OSError as exc:
+            # Typically the file is open in Excel. The search itself worked,
+            # so show the matches rather than losing them.
+            print(f"Could not write the Excel report: {exc}", file=sys.stderr)
+            _print_matches(result)
+            _print_summary(result, None)
+            return 1
+    else:
+        _print_matches(result)
 
-    excel_path = _report_path(args, result)
-    if excel_path:
-        excel.write_report(
-            [result.to_feature_result()],
-            {service.name: service.report_columns()},
-            excel_path,
-        )
-        print(f"\nExcel report written to {excel_path}")
-
+    _print_summary(result, report_path)
     return 0
 
 

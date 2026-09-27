@@ -48,7 +48,7 @@ def test_multiple_documents_write_an_excel_report_without_being_asked(
 
     written = _xlsx_files(tmp_path)
     assert written == ["keyword_matches_authentication.xlsx"]
-    assert "Excel report written to" in capsys.readouterr().out
+    assert "Output: keyword_matches_authentication.xlsx" in capsys.readouterr().out
 
 
 def test_the_automatic_report_contains_every_match(tmp_path, monkeypatch):
@@ -59,14 +59,14 @@ def test_the_automatic_report_contains_every_match(tmp_path, monkeypatch):
     cli.main([str(tmp_path), "--keyword", "authentication"])
 
     workbook = load_workbook(tmp_path / "keyword_matches_authentication.xlsx")
-    sheet = workbook["multi_doc_keyword_search"]
+    sheet = workbook["Keyword Search"]
     rows = list(sheet.iter_rows(values_only=True))
     header, data = rows[0], rows[1:]
 
     assert len(data) == 3  # one row per occurrence, across both documents
-    assert "keyword" in header and "context" in header and "document" in header
-    documents = {row[header.index("document")] for row in data}
-    assert len(documents) == 2
+    assert header == ("Document", "Page", "Keyword", "Match", "Context")
+    documents = {row[header.index("Document")] for row in data}
+    assert documents == {"a.pdf", "b.pdf"}
 
 
 def test_a_report_is_written_even_when_multiple_documents_have_no_matches(

@@ -68,10 +68,23 @@ _REFERENCE_CUE_RE = re.compile(
 # A cross-reference title never begins with one of these. If one follows the
 # cue directly, whatever sat between them has been removed.
 _FUNCTION_WORDS = frozenset({
-    "to", "in", "for", "on", "at", "of", "and", "or", "as", "from",
+    "to", "in", "for", "on", "at", "of", "and", "or", "from",
 })
 
 _NEXT_TOKEN_RE = re.compile(r"([A-Za-z0-9:/'\"\-]+)")
+
+# A cross-reference cue is imperative ("See Modifying XYZ parameters") or
+# follows a comma ("For more information, see ..."). When the cue has a
+# grammatical subject it is the main verb of a sentence or question —
+# "What do I see in the Network Health Summary?" is a heading, not a
+# reference. Ten of twelve false positives on Nokia's NSP guides were this.
+_CUE_SUBJECTS = frozenset({
+    "i", "you", "we", "they", "he", "she", "it", "user", "users",
+    "operator", "operators", "can", "could", "will", "would", "should",
+    "may", "might", "do", "does", "did", "to", "not", "never", "cannot",
+})
+
+_PRECEDING_WORD_RE = re.compile(r"([A-Za-z']+)\s*$")
 
 # Reference types that name a heading in the document outline. Figure and
 # Table references point at captions, which are not headings, so matching
@@ -333,14 +346,20 @@ def _missing_reference_findings(document: Document) -> list[Finding]:
     for paragraph in document.paragraphs:
         text = " ".join(paragraph.text.split("\n"))
         for match in _REFERENCE_CUE_RE.finditer(text):
+            preceding = _PRECEDING_WORD_RE.search(text[: match.start()])
+            if preceding and preceding.group(1).lower() in _CUE_SUBJECTS:
+                continue
+
             tail = text[match.end():]
             token = _NEXT_TOKEN_RE.match(tail)
             following = token.group(1) if token else ""
 
-            if match.group("gap").count(" ") >= 2:
-                reason = "gap where the reference text should be"
-            elif not following or following[0] in ".,;:)":
-                reason = "sentence ends immediately after the reference cue"
+            # Justified PDF text routinely extracts with multiple spaces
+            # between words, so a wide gap after the cue is not evidence of
+            # anything. Both of Nokia's broken examples are caught by the
+            # function-word rule below, which does not have that problem.
+            if following and following[0] in ".,;:)":
+                reason = "reference cue followed immediately by punctuation"
             elif following.lower() in _FUNCTION_WORDS:
                 reason = (
                     f"cue followed by {following!r}, with no reference "

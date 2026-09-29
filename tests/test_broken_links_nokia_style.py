@@ -63,6 +63,9 @@ IGNORE = [
     "See/Refer to XYZ technical support note.",
     "See the note below.",
     "For more information see the Nokia support portal.",
+    # From the NSP User Guides.
+    "What do I see in the Network Health Summary?",
+    "The route is referred to as a Services Leaf.",
 ]
 
 

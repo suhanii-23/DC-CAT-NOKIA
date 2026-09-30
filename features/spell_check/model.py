@@ -16,7 +16,12 @@ from __future__ import annotations
 import logging
 import os
 import re
-import torch
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - exercised only without torch
+    torch = None
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_NAME = "vennify/t5-base-grammar-correction"
@@ -51,9 +56,11 @@ class T5CorrectionModel:
         self._model_name = model_name or os.environ.get(
             "NOKIA_SPELLCHECK_T5_MODEL", _DEFAULT_MODEL_NAME
         )
-        self._device = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
-)
+        self._device = (
+            torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if torch is not None
+            else None
+        )
         self._tokenizer = None
         self._model = None
         self._load_attempted = False

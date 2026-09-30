@@ -2,37 +2,34 @@
 
 A Nokia internship prototype for automated document quality checks
 (broken links, keyword search, spell/terminology check) over PDF and
-DOCX documents. Three teams build one feature each, in parallel, against
-a shared contract.
+DOCX documents. Four people build one feature each, in parallel,
+against a shared contract.
 
 ## Status
 
-- `broken_links` — **done**, the worked example. Fully implemented and tested.
-- `keyword_search` — **done**. Lexical occurrence counting plus BGE +
-  FAISS semantic search. The semantic half needs model weights that are
-  **not in the repo** — see [Semantic search setup](#semantic-search-setup-bge-weights).
-- `spell_check` — **not started**. `features/spell_check/service.py` is
-  an empty file, waiting on its owner.
-- `multi_doc_keyword_search` — **done**. One exact keyword across many
-  documents at once, purely lexical. A *corpus* feature: it runs once
-  over the whole document set rather than once per document, through its
-  own LangGraph graph (`corpus_graph`). Separate
-  from `keyword_search`, which it neither imports nor changes — see
-  [Multi-document keyword search](#multi-document-keyword-search).
+Everything below is implemented and tested.
+
+| Feature | Status |
+|---|---|
+| `broken_links` | **Done.** Flags internal cross-references that no longer resolve, classifies the reference type, and suggests a fix only from headings or captions that exist in the document. Deterministic, no AI, runs fully offline. |
+| `keyword_search` | **Done.** Lexical occurrence counting plus BGE + FAISS semantic search over one document. Degrades to lexical-only when the model weights are absent — see [Semantic search setup](#semantic-search-setup-bge-weights). |
+| `spell_check` | **Done.** Nokia terminology allow-list (built-in or loaded from Excel), local T5 contextual correction with a deterministic confusion-map fallback, difflib word-level diff, and an edit-distance filter that separates real typos from T5 rewordings — see [Spell check setup](#spell-check-setup-t5-weights). |
+| `multi_doc_keyword_search` | **Done.** One exact keyword across many documents at once, purely lexical. A *corpus* feature: it runs once over the whole document set rather than once per document, through its own LangGraph graph (`corpus_graph`) — see [Multi-document keyword search](#multi-document-keyword-search). |
 
 `app/cli.py`, `app/agent/graph.py` and `app/mcp_server.py` are the
-integration points; the search itself lives entirely in
-`features/multi_doc_keyword_search/` and all three only delegate to it.
+integration points; each feature's own logic lives entirely in its
+`features/<name>/` folder and all three only delegate to it.
 
-This is expected, not broken: `app/cli.py` and `tests/test_contract.py`
-both load each feature's class dynamically and skip it if it isn't
-written yet, so the finished features keep running and testing on their
-own. Once someone adds a class to the empty file, the CLI and test suite
-pick it up automatically; no other file needs to change.
+There's also a browser GUI: a React/Vite frontend (`frontend/`) talking
+to a FastAPI backend (`api/main.py`) that wraps the same feature
+services — see [Running the web GUI](#running-the-web-gui).
 
-With the BGE weights provisioned, `pytest tests/ -q` reports
-**67 passed, 2 skipped** — the 2 skips are `spell_check`'s tests, not
-failures.
+`pytest tests/ -q` reports **308 passed** with the BGE/T5 weights
+provisioned on top of `requirements.txt`, or **306 passed, 2 skipped**
+right after `pip install -r requirements.txt` on a fresh clone before
+downloading any weights — the ML-backed tests are written to skip
+themselves rather than fail when weights aren't present. 0 failed
+either way — see [Testing](#testing).
 
 ## The contract comes first
 
@@ -53,7 +50,7 @@ class MyFeatureService:
     def report_columns(self) -> list[str]: ...
 ```
 
-Rules that keep three parallel teams from breaking each other:
+Rules that keep parallel teams from breaking each other:
 
 - **`process()` must never raise.** Catch everything internally and
   return `FeatureResult(status="failed", error=...)`.
@@ -66,64 +63,149 @@ Rules that keep three parallel teams from breaking each other:
   shape of a feature (it doesn't need a model, but the method layout is
   the same).
 - **Never invent evidence.** `broken_links` only ever suggests headings
-  that exist in `document.headings`; if the evidence is weak, it
+  or captions that exist in the document; if the evidence is weak, it
   returns no suggestion instead of guessing.
-- **Fully local.** No cloud APIs, no external LLM calls, no telemetry,
-  no AI vendor SDK dependencies.
+- **Fully local.** No cloud APIs, no telemetry, no AI vendor SDK
+  dependencies. (`spell_check`'s T5 weights are fetched from Hugging
+  Face on first use and cached — see the note in
+  [Spell check setup](#spell-check-setup-t5-weights) — everything else
+  never reaches the network.)
 - **Don't log document text** (avoids leaking document contents into
   logs/CI output).
 
 ## Repo layout
 
 ```
-common/contracts.py           Document, Page, Paragraph, Heading, LinkAnnotation,
-                               Finding, FeatureResult, FeatureModule (Protocol)
-common/parser.py               PDF (PyMuPDF) / DOCX (python-docx) -> Document
-common/excel.py                Summary sheet + one sheet per feature
-features/broken_links/         worked example — done, fully implemented
-features/keyword_search/       done — lexical + BGE/FAISS semantic search
-features/spell_check/          empty — not started, owner TBD
+common/contracts.py            Document, Page, Paragraph, Heading, LinkAnnotation,
+                                Finding, FeatureResult, FeatureModule (Protocol)
+common/parser.py                PDF (PyMuPDF) / DOCX (python-docx) -> Document
+common/excel.py                 Summary sheet + one sheet per feature
+features/broken_links/          done — cross-reference checking, no model
+features/keyword_search/        done — lexical + BGE/FAISS semantic search
+features/spell_check/           done — terminology allow-list + T5 correction
+  ├── service.py                 FeatureModule entry point (process())
+  ├── model.py                   T5CorrectionModel, lazy-loaded, HF fallback
+  ├── preprocessing.py           sentence splitting + protected-term filtering
+  ├── utils.py                   difflib diff + Levenshtein edit-distance filter
+  ├── tools/terminology.py       Nokia terminology allow-list (Excel or built-in)
+  └── agent/                     not wired in yet — see Open items in CLAUDE.md
 features/multi_doc_keyword_search/
-                               done — one exact keyword across many documents,
-                                lexical only; matcher.py (the only matching
-                                logic) / discovery.py / service.py / cli.py
-app/agent/state.py             AgentState (one document) + CorpusState (many)
-app/agent/graph.py             agent_graph (per document) + corpus_graph (per run)
-app/mcp_server.py              the features exposed as MCP tools
-app/cli.py                     python -m app.cli <file|folder> --query X --excel out.xlsx
-                                (loads feature classes dynamically; skips ones not yet written)
-fixtures/make_fixture.py       generates fixtures/sample.pdf for local testing
-models/bge-base-en-v1.5/       BGE weights — gitignored, provisioned per machine
-tests/test_contract.py         parametrised over all three features
-tests/test_keyword_search.py   lexical pass
-tests/test_keyword_search_semantic.py
-                               chunking/selection, a fake encoder, and real-model
-                                tests that skip when the weights are absent
-tests/test_multi_doc_keyword_search.py
-                               the feature itself
-tests/test_multi_doc_keyword_search_cli.py
-                               its standalone CLI and Excel policy
-tests/test_multi_doc_keyword_search_integration.py
-                               its wiring into app/cli.py, app/agent/graph.py
-                                and app/mcp_server.py
+                                done — one exact keyword across many documents,
+                                 lexical only; matcher.py (the only matching
+                                 logic) / discovery.py / service.py / cli.py
+app/agent/state.py              AgentState (one document) + CorpusState (many)
+app/agent/graph.py              agent_graph (per document) + corpus_graph (per run)
+app/mcp_server.py               the features exposed as MCP tools
+app/cli.py                      python -m app.cli <file|folder> --query X --excel out.xlsx
+                                 (loads feature classes dynamically; skips ones not yet written)
+api/main.py                     FastAPI backend for the web GUI — wraps the same
+                                 feature services and LangGraph graphs as the CLI
+frontend/                       React + Vite GUI (upload a document, pick features,
+                                 view findings) — talks to api/main.py over HTTP
+fixtures/make_fixture.py        generates fixtures/sample.pdf for local testing
+fixtures/make_demo.py           generates fixtures/demo_manual.pdf
+fixtures/nokia105.pdf           real Nokia guide used for broken_links regression
+models/bge-base-en-v1.5/        BGE weights — gitignored, provisioned per machine
+tests/                          11 files, 308 tests — test_contract.py is
+                                 parametrised over all four features
 ```
 
-## Setup
+## Installing
+
+### 1. Backend (Python)
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-# CPU-only torch FIRST. sentence-transformers pulls torch in as a
-# dependency, and on Linux/macOS the default wheel drags in ~2.5 GB of
-# CUDA that this project never uses.
+# CPU-only torch FIRST. sentence-transformers and transformers pull torch
+# in as a dependency, and on Linux/macOS the default wheel drags in
+# ~2.5 GB of CUDA that this project never uses.
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 pip install -r requirements.txt
 ```
 
-Semantic search additionally needs model weights, which are **not** in
-the repo — see the next section. Everything else works without them.
+`requirements.txt` covers the CLI, the MCP server, and the FastAPI
+backend (`fastapi`, `uvicorn`, `python-multipart`) in one install —
+there's no separate backend-only requirements file.
+
+Two optional, larger pieces degrade quietly rather than block install:
+
+- **Semantic search** (`keyword_search`) needs ~438 MB of BGE model
+  weights that are **not** in the repo — see
+  [Semantic search setup](#semantic-search-setup-bge-weights).
+  Without them, lexical search still works.
+- **T5 spell correction** (`spell_check`) fetches its weights from
+  Hugging Face the first time it runs and caches them — see
+  [Spell check setup](#spell-check-setup-t5-weights). Without network
+  access, it falls back to a small built-in confusion-map.
+
+### 2. Frontend (only if you want the web GUI)
+
+```bash
+cd frontend
+npm install
+```
+
+Create `frontend/.env.local` (gitignored, so each machine needs its
+own) pointing at wherever the backend runs:
+
+```
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+## Executing the code
+
+There are three ways to run the tool. All three call the same feature
+services underneath.
+
+### Command line
+
+```bash
+python -m app.cli fixtures/demo_manual.pdf --query login --excel report.xlsx
+python -m app.cli fixtures/demo_manual.pdf --features broken_links
+python -m app.cli fixtures/demo_manual.pdf --features spell_check,broken_links
+python -m app.cli fixtures/demo_manual.pdf --ask "are any cross-references broken?"
+python -m app.cli docs/ --features multi_doc_keyword_search --query authentication
+```
+
+`--features` takes a comma-separated list (default `all`); `--ask`
+takes a plain-English request and routes it to features for you
+(prints which features it picked and why); `--query` is the keyword for
+`keyword_search` / `multi_doc_keyword_search`; `--excel PATH` writes a
+report alongside the terminal output.
+
+### MCP server
+
+```bash
+python -m app.mcp_server
+```
+
+Exposes each feature as an MCP tool (`check_broken_links`,
+`search_keyword`, `check_spelling`, `search_documents_for_keyword`) for
+an MCP-aware client to call directly.
+
+### Running the web GUI
+
+Two processes, in two terminals, both from the repo root:
+
+```bash
+# terminal 1 — backend
+source .venv/bin/activate
+uvicorn api.main:app --reload --port 8000
+
+# terminal 2 — frontend
+cd frontend
+npm run dev
+```
+
+Open the URL Vite prints (typically `http://localhost:5173`). Upload a
+PDF/DOCX, pick features, optionally give a keyword, and view findings in
+the browser. `api/main.py` exposes `GET /health`, `POST /analyze` (one
+document) and `POST /analyze-multiple` (many documents, needed for
+`multi_doc_keyword_search`); CORS is pre-configured for
+`localhost:5173`/`5174`.
 
 ## Semantic search setup (BGE weights)
 
@@ -207,17 +289,14 @@ The model must be **bge-base** (768-dim). bge-small is a common
 mix-up and is silently a different model, so the service checks the
 embedding width and refuses rather than returning quietly wrong results.
 
-The fastest check is the test suite, because the two real-model tests
-skip themselves when the weights are absent:
+The fastest check is the test suite, since the real-model tests skip
+themselves when the weights are absent:
 
 ```bash
-pytest tests/ -q
+pytest tests/ -q -rs
 ```
 
-- `67 passed, 2 skipped` — weights are live. The 2 skips are
-  `spell_check`, which is genuinely unimplemented.
-- `65 passed, 4 skipped` — **weights are missing.** Run `pytest tests/ -q -rs`
-  and the two extra skips will say so by name.
+Run `-rs` to see skip reasons by name if the count looks off.
 
 For a direct check of the model itself (bash — on PowerShell, save the
 body to a `.py` file and run that instead, as `python -c` there does not
@@ -245,31 +324,86 @@ findings phrased `Passage related to '<query>' ... (similarity 0.xxx, no
 exact match)`. If you only ever see exact-match findings, semantic search
 is off.
 
-## Workflow
+## Spell check setup (T5 weights)
+
+`spell_check` uses a T5 grammar-correction model
+(`vennify/t5-base-grammar-correction` by default) via
+`transformers.T5ForConditionalGeneration.from_pretrained`. Unlike the BGE
+setup above, this is **not** offline-only: the first call downloads and
+caches the weights through the normal Hugging Face cache
+(`~/.cache/huggingface/`), so the very first run needs network access.
+Every run after that uses the cache and needs nothing.
+
+If the download fails or `transformers`/`torch` aren't installed, the
+service catches the exception and falls back to a small, curated
+confusion-map (`form`/`from`, `thier`/`their`, `recieve`/`receive`, …)
+so the feature still returns results — just without contextual
+correction.
+
+To point at a different model size once one has been benchmarked, set:
 
 ```bash
-python fixtures/make_fixture.py
-pytest tests/ -q
-python -m app.cli fixtures/sample.pdf --query authentication --excel report.xlsx
+export NOKIA_SPELLCHECK_T5_MODEL=<model name or local path>
 ```
 
-`pytest tests/ -q` must stay green after every change (skips for
-not-yet-implemented features are fine; failures are not). A failing test
-means the code is wrong — don't edit the test to make it pass.
+To load the Nokia terminology allow-list from an Excel workbook instead
+of the small built-in default list, pass `terminology_path` in the
+feature options (see `features/spell_check/tools/terminology.py`).
 
-The first run after provisioning the weights prints a one-off
-`Loading weights` progress bar and takes a second or two longer; the
-model is then held in memory and reused for every document in a folder
-walk.
+## Testing
+
+```bash
+source .venv/bin/activate
+pytest tests/ -q
+```
+
+- **308 passed** with both the BGE and T5 weights provisioned (the
+  state of this repo checkout).
+- **306 passed, 2 skipped** right after `pip install -r
+  requirements.txt` on a fresh clone, before downloading any weights —
+  the 2 skips are the real-BGE-model tests in
+  `tests/test_keyword_search_semantic.py`. T5 has no equivalent skip:
+  `spell_check` tests pass either way, since `model.py` falls back to
+  its confusion-map instead of failing when there's no cached T5 model
+  and no network.
+- **286 passed, 22 skipped** if `torch`/`transformers`/
+  `sentence-transformers`/`faiss-cpu` aren't installed at all (e.g. the
+  CPU-only-torch install step was skipped, or a CI box can't take the
+  extra weight). Every feature's `is_available()` still returns `True`
+  and degrades to its non-ML path — see the "degrade, don't crash" rule
+  in `CLAUDE.md`. `features/spell_check/model.py` imports `torch`
+  inside a `try/except ImportError` for exactly this case; without that
+  guard, the bare top-level import used to take down the whole
+  `spell_check` module (and with it, `check_spelling`'s MCP
+  registration) on any machine without torch.
+- 0 failed in all three cases. Run `pytest tests/ -q -rs` to see skip
+  reasons by name if a count looks unexpected.
+
+`pytest tests/ -q` must stay green after every change (skips for
+missing optional weights are fine; failures are not). **A failing test
+means the code is wrong — don't edit the test to make it pass.**
+
+Regenerate fixtures if you change the scripts that build them (and
+commit the regenerated PDF, or the parser tests compare a new script
+against an old document):
+
+```bash
+python fixtures/make_fixture.py     # -> fixtures/sample.pdf
+python fixtures/make_demo.py        # -> fixtures/demo_manual.pdf
+```
+
+Test on `fixtures/nokia105.pdf` and the NSP guides, not only the
+synthetic fixtures — every significant bug so far has surfaced on a
+real document and none on the generated ones.
 
 ## Feature notes
 
-- **broken_links** (done, the worked example): flags internal links
-  whose target page is out of range, and links to named destinations
-  that don't exist. Classifies the reference type (Section/Figure/
-  Table/Appendix/Chapter) by regex, and suggests a fix only from real
-  headings — exact number match is 0.95 confidence, an adjacent sibling
-  number is 0.72, otherwise no suggestion is returned.
+- **broken_links** (done): flags internal links whose target page is
+  out of range, and links to named destinations that don't exist.
+  Classifies the reference type (Section/Figure/Table/Appendix/Chapter)
+  by regex, and suggests a fix only from real headings or captions —
+  exact number match is 0.95 confidence, an adjacent sibling number is
+  0.72, otherwise no suggestion is returned.
 - **keyword_search** (done): two passes over the document, counting by
   paragraph where the document has paragraphs and by page otherwise
   (never both — the parser derives paragraphs *from* page text, so
@@ -293,15 +427,20 @@ walk.
   `is_available()` always returns `True` on purpose. Returning `False`
   when the weights are missing would make the CLI skip the whole feature
   and take working lexical search down with it.
-- **spell_check** (not started): planned as a terminology allow-list
-  (never flag `gNodeB`, `MOCN`, `RSRP`, `X2`, `ERR#01`, `airscale_rnc`)
-  plus a `difflib` comparison against commonly confused real-word pairs
-  (e.g. "form" vs "from"), with a documented spot for a local T5
-  grammar-correction pass to plug in later. Watch out: a naive
-  `difflib.get_close_matches` over every word will flag short common
-  words (e.g. "the" fuzzy-matches "then", "for" fuzzy-matches "form") —
-  guard with a common-words stoplist and a minimum word length before
-  falling back to fuzzy matching.
+- **spell_check** (done): sentences are extracted from
+  `document.paragraphs`, Nokia terminology and identifier-shaped words
+  (ALL-CAPS, digits/underscores, mixed-case like `gNodeB`) are protected
+  from the outset, and the remaining text goes through T5 contextual
+  correction (falling back to a curated confusion-map — see
+  [Spell check setup](#spell-check-setup-t5-weights)). A `difflib`
+  word-level diff between the original and corrected sentence produces
+  candidate changes, and a Levenshtein edit-distance filter (≤2, or ≤1
+  for words of three characters or fewer) rejects T5 rewordings that
+  aren't actually spelling fixes — `difflib.ratio()` alone can't tell a
+  real typo from a rewording (0.75 vs 0.74 are indistinguishable).
+  `features/spell_check/agent/` is a not-yet-wired-in agentic
+  verification layer, pending Nokia's approved LLM infrastructure
+  decision — see the Open items in `CLAUDE.md`.
 - **multi_doc_keyword_search** (done): one exact keyword across many
   documents, one finding per occurrence. The only *corpus* feature —
   see the next section.
@@ -344,7 +483,7 @@ app/agent/graph.py    agent_graph                |  corpus_graph
                         broken_links             |    collect_results
                         keyword_search           |
                         collect_results          |
-app/cli.py            invoked once per file      |  invoked once per run
+app/cli.py             invoked once per file      |  invoked once per run
 ```
 
 Both graphs are optional in the same way: `app/cli.py` imports them in one
@@ -389,7 +528,6 @@ The corpus feature contributes one `FeatureResult` to the run, so `--excel`
 gives it a sheet like any other feature: a row per occurrence with page,
 message, keyword, document, occurrence index, paragraph index,
 matched text, and context.
-
 
 ### Through the MCP server
 

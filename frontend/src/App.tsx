@@ -683,12 +683,16 @@ const featureIdMap: Record<string, string> = {
                     : '—'),
                 confidence: finding.confidence,
 
-                original:
-                  finding.details?.incorrect_word ??
-                  finding.details?.word ??
-                  (featureIdMap[result.feature] === 'keyword-search'
-                    ? keywordQuery.trim()
-                    : undefined),
+                
+original:
+  finding.details?.incorrect_word ??
+  finding.details?.word ??
+  (featureIdMap[result.feature] === 'keyword-search'
+    ? keywordQuery.trim()
+    : featureIdMap[result.feature] === 'broken-links'
+      ? (finding.details?.reference_text ?? undefined)
+      : undefined),
+
                 context:
                   finding.details?.original_sentence ??
                   (finding.details?.reference_type === 'Cross-reference'
@@ -1713,7 +1717,12 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
                         top: highlightBox.y,
                         width: highlightBox.width,
                         height: highlightBox.height,
-                        backgroundColor: 'rgba(217, 48, 37, 0.18)',
+                        
+backgroundColor:
+  activeFinding.featureId === 'broken-links'
+    ? 'rgba(33, 150, 243, 0.22)'
+    : 'rgba(217, 48, 37, 0.18)',
+
                         pointerEvents: 'none',
                         boxSizing: 'border-box',
                       }}

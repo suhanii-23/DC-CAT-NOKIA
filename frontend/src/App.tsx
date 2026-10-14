@@ -379,16 +379,48 @@ function App() {
               .toLowerCase()
               .indexOf(targetText)
 
-            const characterWidth = itemWidth / textItem.str.length
-
             const paddingX = 3
 
+// Measure character widths instead of assuming every character
+// occupies the same amount of space.
+const measurementCanvas = window.document.createElement('canvas')
+const measurementContext = measurementCanvas.getContext('2d')
+
+let prefixWidth = 0
+let matchedWidth = 0
+
+if (measurementContext) {
+  measurementContext.font = `${fontHeight}px sans-serif`
+
+  const measuredItemWidth =
+    measurementContext.measureText(textItem.str).width
+
+  const widthScale =
+    measuredItemWidth > 0 ? itemWidth / measuredItemWidth : 1
+
+  prefixWidth =
+    measurementContext.measureText(
+      textItem.str.slice(0, startIndex),
+    ).width * widthScale
+
+  matchedWidth =
+    measurementContext.measureText(
+      textItem.str.slice(
+        startIndex,
+        startIndex + targetText.length,
+      ),
+    ).width * widthScale
+} else {
+  const characterWidth = itemWidth / textItem.str.length
+  prefixWidth = startIndex * characterWidth
+  matchedWidth = targetText.length * characterWidth
+}
 
 setHighlightBox({
-  x: transform[4] + startIndex * characterWidth ,
+  x: transform[4] + prefixWidth - paddingX,
   y: transform[5] - fontHeight + 1,
-width: targetText.length * characterWidth + paddingX * 2,
-height: fontHeight,
+  width: matchedWidth + paddingX * 2,
+  height: fontHeight,
 })
           } else {
             setHighlightBox(null)
@@ -651,12 +683,16 @@ const featureIdMap: Record<string, string> = {
                     : '—'),
                 confidence: finding.confidence,
 
-                original:
-                  finding.details?.incorrect_word ??
-                  finding.details?.word ??
-                  (featureIdMap[result.feature] === 'keyword-search'
-                    ? keywordQuery.trim()
-                    : undefined),
+                
+original:
+  finding.details?.incorrect_word ??
+  finding.details?.word ??
+  (featureIdMap[result.feature] === 'keyword-search'
+    ? keywordQuery.trim()
+    : featureIdMap[result.feature] === 'broken-links'
+      ? (finding.details?.reference_text ?? undefined)
+      : undefined),
+
                 context:
                   finding.details?.original_sentence ??
                   (finding.details?.reference_type === 'Cross-reference'
@@ -760,6 +796,8 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
 )
     }
 
+  
+  
   const openFinding = (finding: Finding) => {
     const matchingFile = selectedFiles[Number(finding.documentId)]
     if (matchingFile) {
@@ -788,6 +826,8 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
     setZoom(1)
     setScreen('viewer')
   }
+
+
     const resultFindings = analysisResult?.findings ?? []
 
 
@@ -1677,7 +1717,12 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
                         top: highlightBox.y,
                         width: highlightBox.width,
                         height: highlightBox.height,
-                        backgroundColor: 'rgba(217, 48, 37, 0.18)',
+                        
+backgroundColor:
+  activeFinding.featureId === 'broken-links'
+    ? 'rgba(33, 150, 243, 0.22)'
+    : 'rgba(217, 48, 37, 0.18)',
+
                         pointerEvents: 'none',
                         boxSizing: 'border-box',
                       }}

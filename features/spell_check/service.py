@@ -21,22 +21,24 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Optional
 from wordfreq import zipf_frequency
 
 from common.contracts import Document, FeatureResult, Finding
 
+from .dictionary import DictionaryChecker
 from .model import get_model
 from .preprocessing import is_protected_term, load_terminology, split_sentences
 from .utils import word_level_changes
 logger = logging.getLogger(__name__)
 _COMMON_WORD_THRESHOLD = 4.0
 
+# options["spell_mode"]: which checker(s) run. "t5" is the default so callers
+# that predate the option (CLI, MCP, router) keep their behaviour.
+SPELL_MODES = ("dictionary", "t5", "both")
+_DEFAULT_MODE = "t5"
 
-def _is_verified_spelling_change(original: str, suggestion: str) -> bool:
-    """Reject changes where both words are common English words."""
-    original_frequency = zipf_frequency(original.lower(), "en")
-    suggestion_frequency = zipf_frequency(suggestion.lower(), "en")
 
 def _is_verified_spelling_change(original: str, suggestion: str) -> bool:
     """Reject common-word changes unless they look like a likely typo."""
@@ -78,6 +80,8 @@ def _is_verified_spelling_change(original: str, suggestion: str) -> bool:
         return False
 
     return True
+
+
 class SpellCheckService:
     name = "spell_check"
 
@@ -85,6 +89,7 @@ class SpellCheckService:
         terms_path = terms_excel or os.environ.get("NOKIA_TERMS_XLSX")
         self._terminology = load_terminology(terms_path)
         self._model = get_model()  # lazy: no weights loaded until first correct()
+        self._dictionary = DictionaryChecker()  # lazy: word list loads on first check
 
     def is_available(self) -> bool:
         return True
@@ -95,56 +100,86 @@ class SpellCheckService:
     def process(
         self, document: Document, options: Optional[dict[str, Any]] = None
     ) -> FeatureResult:
+        """Options (all optional):
+
+        - ``spell_mode``: "dictionary", "t5" (default), or "both".
+        - ``terms_excel``: path to an Excel of terms never to flag, on top of
+          the built-in list and ``NOKIA_TERMS_XLSX``.
+        """
         try:
+            options = options or {}
+            mode = options.get("spell_mode") or _DEFAULT_MODE
+            if mode not in SPELL_MODES:
+                raise ValueError(
+                    f"Unknown spell_mode {mode!r}; expected one of {SPELL_MODES}"
+                )
+
+            terminologies = [self._terminology]
+            meta: dict[str, Any] = {"spell_mode": mode}
+            if options.get("terms_excel"):
+                extra = load_terminology(options["terms_excel"])
+                terminologies.append(extra)
+                meta["uploaded_terms"] = extra.loaded_count
+
+            def protected(word: str) -> bool:
+                return any(is_protected_term(word, t) for t in terminologies)
+
+            sentence_items = [
+                (sentence, para.page, para.index)
+                for para in document.paragraphs
+                for sentence in split_sentences(para.text)
+            ]
+
             findings: list[Finding] = []
+            seen: dict[tuple[int, str, str], Finding] = {}
 
-            sentence_items = []
+            def add(change, sentence, corrected, page, paragraph_index, method):
+                key = (paragraph_index, sentence, change.original.lower())
+                if key in seen:
+                    seen[key].details["method"] = "both"
+                    return
+                finding = _to_finding(
+                    self.name, change, sentence, corrected, page,
+                    paragraph_index, method,
+                )
+                seen[key] = finding
+                findings.append(finding)
 
-            for para in document.paragraphs:
-                for sentence in split_sentences(para.text):
-                    sentence_items.append(
-                        (sentence, para.page, para.index)
-                    )
+            if mode in ("t5", "both"):
+                corrected_sentences = self._model.correct_many(
+                    [item[0] for item in sentence_items],
+                    batch_size=52,
+                )
+                for (sentence, page, paragraph_index), corrected in zip(
+                    sentence_items,
+                    corrected_sentences,
+                ):
+                    for change in word_level_changes(sentence, corrected):
+                        if not _is_verified_spelling_change(
+                            change.original,
+                            change.suggestion,
+                        ):
+                            continue
+                        if protected(change.original):
+                            continue
+                        add(change, sentence, corrected, page, paragraph_index, "t5")
 
-            sentences = [item[0] for item in sentence_items]
-            corrected_sentences = self._model.correct_many(
-                sentences,
-                batch_size=52,
-            )
-
-            for (sentence, page, paragraph_index), corrected in zip(
-                sentence_items,
-                corrected_sentences,
-            ):
-                for change in word_level_changes(sentence, corrected):
-                    if not _is_verified_spelling_change(
-                        change.original,
-                        change.suggestion,
-                    ):
-                        continue
-
-                    protected = is_protected_term(
-                        change.original,
-                        self._terminology,
-                    )
-                    if protected:
-                        continue
-
-                    findings.append(
-                        _to_finding(
-                            self.name,
-                            change,
-                            sentence,
-                            corrected,
-                            page,
-                            paragraph_index,
+            if mode in ("dictionary", "both"):
+                for sentence, page, paragraph_index in sentence_items:
+                    for change in self._dictionary.check(sentence):
+                        if protected(change.original):
+                            continue
+                        corrected = _replace_word(
+                            sentence, change.original, change.suggestion
                         )
-                    )
+                        add(change, sentence, corrected, page, paragraph_index,
+                            "dictionary")
 
             return FeatureResult(
                 feature=self.name,
                 status="ok",
                 findings=findings,
+                meta=meta,
             )
 
         except Exception as exc:
@@ -155,15 +190,27 @@ class SpellCheckService:
                 error=str(exc),
             )
 
-
     def report_columns(self) -> list[str]:
         return [
             "incorrect_word", "suggested_correction", "issue_type",
             "original_sentence", "corrected_sentence", "paragraph_index",
+            "method",
         ]
 
 
-def _to_finding(feature, change, sentence, corrected, page, paragraph_index) -> Finding:
+_ISSUE_TYPES = {
+    "t5": "contextual_spelling",
+    "dictionary": "dictionary_spelling",
+}
+
+
+def _replace_word(sentence: str, word: str, replacement: str) -> str:
+    return re.sub(rf"\b{re.escape(word)}\b", replacement, sentence, count=1)
+
+
+def _to_finding(
+    feature, change, sentence, corrected, page, paragraph_index, method
+) -> Finding:
     return Finding(
     feature=feature,
     page=page,
@@ -175,7 +222,8 @@ def _to_finding(feature, change, sentence, corrected, page, paragraph_index) -> 
             "suggestion": change.suggestion,
             "incorrect_word": change.original,
             "suggested_correction": change.suggestion,
-            "issue_type": "contextual_spelling",
+            "issue_type": _ISSUE_TYPES[method],
+            "method": method,
             "original_sentence": sentence,
             "corrected_sentence": corrected,
             "paragraph_index": paragraph_index,

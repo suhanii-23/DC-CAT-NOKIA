@@ -30,6 +30,30 @@ FEATURE_NAME_MAP = {
 }
 
 
+async def _save_upload(upload: UploadFile) -> str:
+    suffix = os.path.splitext(upload.filename or "")[1].lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        temp_file.write(await upload.read())
+        return temp_file.name
+
+
+async def _feature_options(
+    query: str | None,
+    spell_mode: str,
+    terms_file: UploadFile | None,
+    temp_paths: list[str],
+) -> dict:
+    """Options passed to every feature. An uploaded terminology Excel is
+    saved to a temp file (added to ``temp_paths`` for cleanup) and handed to
+    spell_check as ``terms_excel``: words in it are never flagged."""
+    options: dict = {"query": query, "spell_mode": spell_mode}
+    if terms_file is not None and terms_file.filename:
+        terms_path = await _save_upload(terms_file)
+        temp_paths.append(terms_path)
+        options["terms_excel"] = terms_path
+    return options
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -40,6 +64,8 @@ async def analyze(
     file: UploadFile = File(...),
     features: str = Form(...),
     query: str | None = Form(None),
+    spell_mode: str = Form("t5"),
+    terms_file: UploadFile | None = File(None),
 ):
     selected_features = [
         FEATURE_NAME_MAP[name.strip()]
@@ -53,16 +79,11 @@ async def analyze(
             "message": "No valid features selected.",
         }
 
-    suffix = os.path.splitext(file.filename or "")[1].lower()
-
-    with tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=suffix,
-    ) as temp_file:
-        temp_file.write(await file.read())
-        temp_path = temp_file.name
+    temp_path = await _save_upload(file)
+    temp_paths = [temp_path]
 
     try:
+        options = await _feature_options(query, spell_mode, terms_file, temp_paths)
         document = parse(temp_path)
 
         from app.agent.graph import agent_graph
@@ -70,7 +91,7 @@ async def analyze(
         result = agent_graph.invoke(
             {
                 "document": document,
-                "options": {"query": query},
+                "options": options,
                 "selected_features": selected_features,
             }
         )
@@ -102,7 +123,9 @@ async def analyze(
         }
 
     finally:
-        os.unlink(temp_path)
+        for path in temp_paths:
+            if os.path.exists(path):
+                os.unlink(path)
 
 
 @app.post("/analyze-multiple")
@@ -110,6 +133,8 @@ async def analyze_multiple(
     files: list[UploadFile] = File(...),
     features: str = Form(...),
     query: str | None = Form(None),
+    spell_mode: str = Form("t5"),
+    terms_file: UploadFile | None = File(None),
 ):
     selected_features = [
         (
@@ -130,6 +155,7 @@ async def analyze_multiple(
     temp_paths: list[str] = []
 
     try:
+        options = await _feature_options(query, spell_mode, terms_file, temp_paths)
         documents = []
 
         for file in files:
@@ -169,7 +195,7 @@ async def analyze_multiple(
                 result = agent_graph.invoke(
                     {
                         "document": item["document"],
-                        "options": {"query": query},
+                        "options": options,
                         "selected_features": per_document_features,
                     }
                 )
@@ -205,7 +231,7 @@ async def analyze_multiple(
             corpus_result = corpus_graph.invoke(
                 {
                     "paths": [item["path"] for item in documents],
-                    "options": {"query": query},
+                    "options": options,
                     "selected_features": ["multi_doc_keyword_search"],
                 }
             )

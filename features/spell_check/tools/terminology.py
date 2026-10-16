@@ -49,16 +49,21 @@ class TerminologyTool:
 
     def __init__(self, terms: Optional[Iterable[str]] = None) -> None:
         base = set(_DEFAULT_TERMS)
-        if terms:
-            base |= {t.strip().lower() for t in terms if t and t.strip()}
-        self._terms = base
+        loaded = {t.strip().lower() for t in terms or () if t and t.strip()}
+        # A multi-word entry ("Network Services Platform") protects each of
+        # its words too, since the checkers look at one word at a time.
+        loaded |= {w for t in loaded for w in t.split()}
+        self._terms = base | loaded
+        self.loaded_count = len(loaded)
 
     @classmethod
     def from_excel(cls, path: str | Path) -> "TerminologyTool":
         """Build from a Nokia Acronym/Parameter Excel.
 
         Accepts any column named ``Acronym`` (per the DC CAT user guide) or a
-        small set of aliases. Falls back to defaults if the file is missing or
+        small set of aliases. A sheet with none of those headers is read as a
+        plain list: every non-empty cell of its first column, first row
+        included. Falls back to defaults if the file is missing or
         unreadable — the tool never crashes the run over a bad list.
         """
         path = Path(path)
@@ -70,14 +75,18 @@ class TerminologyTool:
 
             wb = load_workbook(path, read_only=True, data_only=True)
             ws = wb.active
-            rows = ws.iter_rows(values_only=True)
-            header = [str(c).strip() if c is not None else "" for c in next(rows)]
+            rows = list(ws.iter_rows(values_only=True))
+            wb.close()
+            if not rows:
+                logger.warning("Terminology Excel %s is empty; using defaults", path.name)
+                return cls()
+            header = [str(c).strip() if c is not None else "" for c in rows[0]]
             col = _pick_column(header)
             if col is None:
-                logger.warning("No Acronym-like column in %s; using defaults", path.name)
-                return cls()
-            idx = header.index(col)
-            terms = [str(r[idx]) for r in rows if idx < len(r) and r[idx] is not None]
+                idx, body = 0, rows
+            else:
+                idx, body = header.index(col), rows[1:]
+            terms = [str(r[idx]) for r in body if idx < len(r) and r[idx] is not None]
             logger.info("Loaded %d Nokia terms from %s", len(terms), path.name)
             return cls(terms)
         except Exception as exc:  # never let a bad Excel abort the run

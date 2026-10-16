@@ -71,6 +71,8 @@ type Finding = {
   context?: string
   correctedSentence?: string
   paragraphIndex?: number
+  issueType?: string
+  method?: string
   boundingBox?: {
     x: number
     y: number
@@ -144,6 +146,26 @@ const features: Feature[] = [
     icon: 'search',
   },
 ]
+type SpellMode = 'dictionary' | 't5' | 'both'
+
+const spellModes: { id: SpellMode; name: string; description: string }[] = [
+  {
+    id: 'dictionary',
+    name: 'Dictionary',
+    description: 'Fast word-list check. Catches misspelled words.',
+  },
+  {
+    id: 't5',
+    name: 'T5 contextual',
+    description: 'AI model reads each sentence. Slower, uses context.',
+  },
+  {
+    id: 'both',
+    name: 'Both',
+    description: 'Run both checks and merge their findings.',
+  },
+]
+
 GlobalWorkerOptions.workerSrc = pdfWorker
 
 function Icon({ name }: { name: IconName }) {
@@ -297,6 +319,8 @@ function App() {
   const [documentFilter, setDocumentFilter] = useState('all')
   const [featureFilter, setFeatureFilter] = useState('all')
   const [keywordQuery, setKeywordQuery] = useState('')
+  const [spellMode, setSpellMode] = useState<SpellMode>('dictionary')
+  const [termsFile, setTermsFile] = useState<File | null>(null)
   const [zoom, setZoom] = useState(1)
   const [viewerState, setViewerState] = useState<
     'idle' | 'loading' | 'ready' | 'error'
@@ -309,6 +333,7 @@ function App() {
   } | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const termsInputRef = useRef<HTMLInputElement>(null)
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null)
 
   const canAnalyze =
@@ -595,6 +620,11 @@ setHighlightBox({
 
     formData.append('features', selectedFeatureIds.join(','))
     formData.append('query', keywordQuery)
+    formData.append('spell_mode', spellMode)
+
+    if (termsFile) {
+      formData.append('terms_file', termsFile)
+    }
 
     setProgress(0)
     setScreen('progress')
@@ -646,6 +676,8 @@ const featureIdMap: Record<string, string> = {
                 original_sentence?: string
                 corrected_sentence?: string
                 paragraph_index?: number
+                issue_type?: string
+                method?: string
                 document_name?: string
                 suggested_heading?: string | null
                 suggested_page?: number | null
@@ -702,6 +734,8 @@ original:
                   finding.details?.corrected_sentence,
                 paragraphIndex:
                   finding.details?.paragraph_index,
+                issueType: finding.details?.issue_type,
+                method: finding.details?.method,
               }
             }),
           ),
@@ -769,6 +803,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
   setDocumentFilter('all')
   setFeatureFilter('all')
   setKeywordQuery('')
+  setTermsFile(null)
   setZoom(1)
   setViewerState('idle')
   setHighlightBox(null)
@@ -944,7 +979,9 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
           finding.suggestion === '—'
             ? ''
             : finding.suggestion,
-        'Issue Type': 'contextual_spelling',
+        'Issue Type':
+          finding.issueType ?? 'contextual_spelling',
+        Method: finding.method ?? '',
         'Original Sentence': finding.context ?? '',
         'Corrected Sentence':
           finding.correctedSentence ?? '',
@@ -967,6 +1004,7 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
   55,
   55,
   18,
+  12,
 ])
 
       XLSX.utils.book_append_sheet(
@@ -1243,7 +1281,74 @@ localStorage.setItem('dc-cat-history', JSON.stringify(updatedHistory))
             'PDF or DOCX · Large documents supported'}
         </p>
       </section>
-  <section className="analysis-section"><div className="section-heading"><div><h2>Choose analysis features</h2><p>Select one or more checks to run on your document.</p></div><button className="more-features">More features <Icon name="arrow" /></button></div><div className="feature-grid">{features.map((feature) => { const chosen = selectedFeatureIds.includes(feature.id); return <button key={feature.id} className={`feature-card ${chosen ? 'is-selected' : ''}`} onClick={() => toggleFeature(feature.id)} aria-pressed={chosen}><span className="feature-icon"><Icon name={feature.icon} /></span><span className="feature-content"><strong>{feature.name}</strong><span>{feature.description}</span></span><span className="selection-indicator">{chosen && '✓'}</span></button> })}</div></section>{selectedFeatureIds.includes('keyword-search') && (
+  <section className="analysis-section"><div className="section-heading"><div><h2>Choose analysis features</h2><p>Select one or more checks to run on your document.</p></div><button className="more-features">More features <Icon name="arrow" /></button></div><div className="feature-grid">{features.map((feature) => { const chosen = selectedFeatureIds.includes(feature.id); return <button key={feature.id} className={`feature-card ${chosen ? 'is-selected' : ''}`} onClick={() => toggleFeature(feature.id)} aria-pressed={chosen}><span className="feature-icon"><Icon name={feature.icon} /></span><span className="feature-content"><strong>{feature.name}</strong><span>{feature.description}</span></span><span className="selection-indicator">{chosen && '✓'}</span></button> })}</div></section>{selectedFeatureIds.includes('spell-check') && (
+  <div className="spell-check-options">
+    <fieldset className="spell-mode">
+      <legend>Spell check method</legend>
+      <div className="spell-mode-options">
+        {spellModes.map((mode) => (
+          <label
+            key={mode.id}
+            className={`spell-mode-option ${
+              spellMode === mode.id ? 'is-selected' : ''
+            }`}
+          >
+            <input
+              type="radio"
+              name="spell-mode"
+              value={mode.id}
+              checked={spellMode === mode.id}
+              onChange={() => setSpellMode(mode.id)}
+            />
+            <strong>{mode.name}</strong>
+            <span>{mode.description}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+
+    <div className="terms-upload">
+      <span className="terms-upload-label">Terms to ignore (optional)</span>
+      <p>
+        Upload an Excel sheet of Nokia terminology. Words in it are never
+        flagged. Use a column named Acronym or Term, or just list one term
+        per row in the first column.
+      </p>
+      <input
+        ref={termsInputRef}
+        id="terms-file"
+        className="visually-hidden"
+        type="file"
+        accept=".xlsx,.xlsm"
+        onChange={(event) =>
+          setTermsFile(event.target.files?.[0] ?? null)
+        }
+      />
+      {termsFile ? (
+        <div className="terms-file">
+          <span>{termsFile.name}</span>
+          <button
+            type="button"
+            className="remove-file"
+            aria-label="Remove terminology file"
+            onClick={() => {
+              setTermsFile(null)
+              if (termsInputRef.current) {
+                termsInputRef.current.value = ''
+              }
+            }}
+          >
+            <Icon name="remove" />
+          </button>
+        </div>
+      ) : (
+        <label htmlFor="terms-file" className="choose-button">
+          Upload terminology Excel
+        </label>
+      )}
+    </div>
+  </div>
+)}{selectedFeatureIds.includes('keyword-search') && (
   <div className="keyword-search-input">
     <label htmlFor="keyword-query">Keyword to search</label>
     <input
